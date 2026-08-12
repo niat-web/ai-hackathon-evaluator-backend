@@ -1,5 +1,12 @@
 steps:
-  # Step 1: Build Docker image
+  # Step 1: Ensure Artifact Registry repository exists (required before first push)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - '-c'
+      - 'gcloud artifacts repositories describe ai-hackathon-evaluator-backend --location=asia-south1 || gcloud artifacts repositories create ai-hackathon-evaluator-backend --repository-format=docker --location=asia-south1 --description="Docker repository for AI Hackathon Evaluator Backend"'
+
+  # Step 2: Build Docker image
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
@@ -9,34 +16,109 @@ steps:
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:latest'
       - '.'
 
-  # Step 2: Push image to Artifact Registry
+  # Step 3: Push image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA'
 
-  # Step 3: Ensure the submission-video bucket exists
+  # Step 4: Ensure submission-video bucket exists (+ CORS for browser PUT uploads)
+  # Prefer asia-south1 to colocate with Cloud Run (Phase 8).
+  #
+  # Existing buckets keep their location (GCS locations are immutable). If the
+  # bucket is still in us-central1, deploy continues with a WARNING — copy data
+  # once using the runbook below, then recreate colocated or switch bucket name.
+  #
+  # --- One-time GCS region migration runbook (ops) ---
+  # Option A — same bucket name (brief downtime):
+  #   1) gcloud storage buckets create gs://$PROJECT_ID-hackathon-evaluations-tmp \
+  #        --location=asia-south1 --uniform-bucket-level-access
+  #   2) gcloud storage cp -r gs://$PROJECT_ID-hackathon-evaluations/* \
+  #        gs://$PROJECT_ID-hackathon-evaluations-tmp/
+  #   3) Delete the old us-central1 bucket (only after verifying copy)
+  #   4) Recreate gs://$PROJECT_ID-hackathon-evaluations --location=asia-south1
+  #   5) Copy tmp → new bucket; delete tmp; re-apply CORS (this step)
+  # Option B — new name (zero rewrite of Cloud Build env until cutover):
+  #   1) Create gs://$PROJECT_ID-hackathon-evaluations-as1 in asia-south1
+  #   2) Copy objects; update EVALUATION_BUCKET_NAME on Cloud Run
+  #   3) Rewrite Firestore video_path / banner_path prefixes OR dual-read period
+  # Note: bash vars must use $$ so Cloud Build does not treat them as substitutions.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: bash
     args:
       - '-c'
-      - 'gcloud storage buckets describe gs://$PROJECT_ID-hackathon-evaluations || gcloud storage buckets create gs://$PROJECT_ID-hackathon-evaluations --location=us-central1 --uniform-bucket-level-access'
+      - |
+        set -euo pipefail
+        BUCKET=gs://$PROJECT_ID-hackathon-evaluations
+        DESIRED_LOCATION=asia-south1
+        if gcloud storage buckets describe "$$BUCKET" >/dev/null 2>&1; then
+          CURRENT_LOCATION=$$(gcloud storage buckets describe "$$BUCKET" --format='value(location)' | tr '[:upper:]' '[:lower:]')
+          if [ "$$CURRENT_LOCATION" != "$$DESIRED_LOCATION" ]; then
+            echo "WARNING: $$BUCKET is in $$CURRENT_LOCATION (want $$DESIRED_LOCATION)."
+            echo "Keeping existing bucket so current video URLs keep working."
+            echo "See Phase 8 migration runbook comments above this Cloud Build step."
+          else
+            echo "Bucket $$BUCKET already in $$DESIRED_LOCATION"
+          fi
+        else
+          gcloud storage buckets create "$$BUCKET" \
+            --location="$$DESIRED_LOCATION" \
+            --uniform-bucket-level-access
+          echo "Created $$BUCKET in $$DESIRED_LOCATION"
+        fi
+        cat > /tmp/cors.json <<'EOF'
+        [
+          {
+            "origin": ["https://hackniat.vercel.app", "http://localhost:3000", "http://localhost:5173"],
+            "method": ["GET", "PUT", "HEAD", "OPTIONS"],
+            "responseHeader": ["Content-Type", "Content-Length", "x-goog-resumable"],
+            "maxAgeSeconds": 3600
+          }
+        ]
+        EOF
+        gcloud storage buckets update "$$BUCKET" --cors-file=/tmp/cors.json
 
-  # Step 4: Deploy to Cloud Run
+  # Step 5: Cloud Tasks queue for durable AI evaluation (Phase 2)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
+    entrypoint: bash
     args:
-      - 'run'
-      - 'deploy'
-      - 'ai-hackathon-evaluator-backend'
-      - '--image=asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA'
-      - '--region=asia-south1'
-      - '--allow-unauthenticated'
-      - '--update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest'
-      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-2.5-flash'
-      - '--memory=1Gi'
-      - '--cpu=1'
-      - '--timeout=3600'
+      - '-c'
+      - |
+        gcloud tasks queues describe evaluation-jobs --location=asia-south1 \
+          || gcloud tasks queues create evaluation-jobs --location=asia-south1
+
+  # Step 6: Deploy to Cloud Run, then set Cloud Tasks target URL to this revision's URL
+  # Prerequisite: Secret Manager secret INTERNAL_JOB_SECRET must already exist (see README).
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        gcloud run deploy ai-hackathon-evaluator-backend \
+          --image=asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA \
+          --region=asia-south1 \
+          --allow-unauthenticated \
+          --update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest \
+          --set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=https://hackniat.vercel.app,EVALUATION_JOB_MODE=cloud_tasks,CLOUD_TASKS_LOCATION=asia-south1,CLOUD_TASKS_QUEUE=evaluation-jobs,CSRF_PROTECTION=true,REQUIRE_CURRENT_PASSWORD_ON_CHANGE=true,SEED_ON_STARTUP=true \
+          --memory=1Gi \
+          --cpu=1 \
+          --timeout=3600
+
+        SERVICE_URL=$$(gcloud run services describe ai-hackathon-evaluator-backend \
+          --region=asia-south1 --format='value(status.url)')
+        gcloud run services update ai-hackathon-evaluator-backend \
+          --region=asia-south1 \
+          --update-env-vars=CLOUD_TASKS_TARGET_URL=$${SERVICE_URL}/internal/jobs/evaluate-submission
+
+        # Allow the Cloud Run runtime SA to enqueue tasks
+        PROJECT_NUMBER=$$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+        RUNTIME_SA=$${PROJECT_NUMBER}-compute@developer.gserviceaccount.com
+        gcloud projects add-iam-policy-binding $PROJECT_ID \
+          --member="serviceAccount:$${RUNTIME_SA}" \
+          --role="roles/cloudtasks.enqueuer" \
+          --condition=None \
+          --quiet || true
     env:
       - 'CLOUDSDK_COMPUTE_REGION=asia-south1'
 

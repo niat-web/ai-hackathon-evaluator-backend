@@ -17,9 +17,10 @@ services:
       - GEMINI_MODEL=${GEMINI_MODEL}
       - ENVIRONMENT=production
       - DEBUG=false
+      - PORT=8000
     volumes:
       - ./app:/app/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: sh -c "exec uvicorn app.main:app --host 0.0.0.0 --port $${PORT:-8000}"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
@@ -44,8 +45,9 @@ services:
       - GEMINI_MODEL=${GEMINI_MODEL}
       - ENVIRONMENT=development
       - DEBUG=true
+      - PORT=8000
     volumes:
       - ./app:/app/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -c "exec uvicorn app.main:app --host 0.0.0.0 --port $${PORT:-8000} --reload"
     profiles:
       - dev

@@ -6,8 +6,9 @@ pydantic>=2.9.0,<3.0.0
 # Firebase (auth + Firestore)
 firebase-admin==6.2.0
 
-# Google Cloud / Vertex AI (Gemini video analysis + GCS)
+# Google Cloud / Vertex AI (Gemini video analysis + GCS + durable jobs)
 google-cloud-storage>=2.19.0
+google-cloud-tasks>=2.16.0,<3.0.0
 google-genai>=1.52.0,<3.0.0
 
 # Configuration

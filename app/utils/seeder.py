@@ -3,6 +3,7 @@ Database seeder - Initialize default data
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
@@ -12,6 +13,22 @@ from app.services.user_service import UserService
 
 
 logger = logging.getLogger(__name__)
+
+
+def seed_on_startup_enabled() -> bool:
+    """
+    Whether lifespan should run ``DatabaseSeeder.seed_all``.
+
+    Default **true** preserves today's seed-on-startup behaviour. Set
+    ``SEED_ON_STARTUP=false`` in production once bootstrap accounts exist
+    (Phase 8).
+    """
+    return os.getenv("SEED_ON_STARTUP", "true").lower() in ("1", "true", "yes")
+
+
+class TeamMemberSeed(TypedDict):
+    name: str
+    email: str
 
 
 class SeedUser(TypedDict):
@@ -24,9 +41,14 @@ class SeedUser(TypedDict):
     employee_id: str | None
     mobile_no: str | None
     approval_status: NotRequired[ApprovalStatus]
+    team_name: NotRequired[str]
+    university: NotRequired[str]
+    team_leader_name: NotRequired[str]
+    team_members: NotRequired[list[TeamMemberSeed]]
 
 
-# Sample users aligned with registration profile fields.
+# Startup seed creates only the bootstrap admin (no sample evaluators/students,
+# and no AI evaluation prompts — those are managed in the admin UI).
 DEFAULT_SEED_USERS: list[SeedUser] = [
     {
         "email": "admin@nxtwave.co.in",
@@ -38,59 +60,32 @@ DEFAULT_SEED_USERS: list[SeedUser] = [
         "employee_id": "NW-ADM-001",
         "mobile_no": "9000000001",
     },
-    {
-        "email": "evaluator@nxtwave.co.in",
-        "password": "12345678",
-        "first_name": "Priya",
-        "last_name": "Sharma",
-        "role": "evaluator",
-        "approval_status": "approved",
-        "niat_id": None,
-        "employee_id": "NW-EMP-1001",
-        "mobile_no": None,
-    },
-    {
-        "email": "evaluator.pending@nxtwave.co.in",
-        "password": "12345678",
-        "first_name": "Rahul",
-        "last_name": "Verma",
-        "role": "evaluator",
-        "approval_status": "pending",
-        "niat_id": None,
-        "employee_id": "NW-EMP-1002",
-        "mobile_no": None,
-    },
-    {
-        "email": "student@nxtwave.co.in",
-        "password": "12345678",
-        "first_name": "Aarav",
-        "last_name": "Patel",
-        "role": "student",
-        "approval_status": "approved",
-        "niat_id": "NIAT-2026-001",
-        "employee_id": None,
-        "mobile_no": "9876543210",
-    },
 ]
 
 
 class DatabaseSeeder:
     """
-    Seeder for initializing database with default data.
-    Creates sample admin, evaluator, and student users.
+    Seeder for initializing database with bootstrap data.
+
+    On startup this ensures only the admin account (and Profile Password) exist.
+    It does **not** seed AI prompts or sample student/evaluator users.
     """
 
-    def __init__(self):
-        """Initialize seeder"""
-        self.firebase = FirebaseService()
-        self.user_service = UserService()
+    def __init__(
+        self,
+        firebase: FirebaseService | None = None,
+        user_service: UserService | None = None,
+    ):
+        """Initialize seeder (optional DI for shared Firebase/UserService)."""
+        self.firebase = firebase or FirebaseService()
+        self.user_service = user_service or UserService(firebase=self.firebase)
 
     def seed_user(self, seed: SeedUser) -> bool:
         """
         Create or sync a user with the given role profile.
         """
         email = seed["email"].lower()
-        name = self._full_name(seed)
+        name = self._display_name(seed)
         role = seed["role"]
 
         try:
@@ -137,15 +132,29 @@ class DatabaseSeeder:
     def _full_name(seed: SeedUser) -> str:
         return f"{seed['first_name'].strip()} {seed['last_name'].strip()}"
 
+    @classmethod
+    def _display_name(cls, seed: SeedUser) -> str:
+        if seed["role"] == "student" and seed.get("team_leader_name"):
+            return seed["team_leader_name"].strip()
+        return cls._full_name(seed)
+
+    @classmethod
+    def _leader_name_parts(cls, seed: SeedUser) -> tuple[str, str]:
+        if seed["role"] == "student" and seed.get("team_leader_name"):
+            parts = seed["team_leader_name"].strip().split(None, 1)
+            return parts[0], parts[1] if len(parts) > 1 else ""
+        return seed["first_name"].strip(), seed["last_name"].strip()
+
     def _build_profile(self, seed: SeedUser, created_at: str | None = None) -> dict[str, Any]:
         """
         Build a Firestore user document using the same fields as registration.
         """
         now = datetime.utcnow().isoformat()
+        first_name, last_name = self._leader_name_parts(seed)
         profile: dict[str, Any] = {
-            "first_name": seed["first_name"].strip(),
-            "last_name": seed["last_name"].strip(),
-            "name": self._full_name(seed),
+            "first_name": first_name,
+            "last_name": last_name,
+            "name": self._display_name(seed),
             "email": seed["email"].lower(),
             "role": seed["role"],
             "created_at": created_at or now,
@@ -160,6 +169,17 @@ class DatabaseSeeder:
         if seed["role"] == "student":
             profile["niat_id"] = seed["niat_id"]
             profile["mobile_no"] = seed["mobile_no"]
+            if seed.get("team_name"):
+                profile["team_name"] = seed["team_name"].strip()
+            if seed.get("university"):
+                profile["university"] = seed["university"].strip()
+            if seed.get("team_leader_name"):
+                profile["team_leader_name"] = seed["team_leader_name"].strip()
+            if seed.get("team_members"):
+                profile["team_members"] = [
+                    {"name": member["name"].strip(), "email": member["email"].lower()}
+                    for member in seed["team_members"]
+                ]
         elif seed["role"] == "evaluator":
             profile["employee_id"] = seed["employee_id"]
         elif seed["role"] == "admin" and seed["employee_id"]:
@@ -204,8 +224,19 @@ class DatabaseSeeder:
                 logger.info("%s", "=" * 60)
                 self.seed_user(seed_user)
 
+            self._seed_profile_password()
+
             logger.info("\nDatabase seeding completed successfully!")
             return True
         except Exception as e:
             logger.error("Error during seeding: %s", str(e))
             raise
+
+    def _seed_profile_password(self) -> None:
+        """Idempotently seed admin Profile Password (default ``12345678``)."""
+        try:
+            from app.services.app_settings_service import AppSettingsService
+
+            AppSettingsService(firebase=self.firebase).ensure_default_profile_password()
+        except Exception as e:
+            logger.warning("Could not seed admin Profile Password: %s", str(e))

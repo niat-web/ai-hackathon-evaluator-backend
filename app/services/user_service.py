@@ -6,7 +6,8 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from app.models.user_model import ApprovalStatus, UserResponse, UserRole
+from app.exceptions import InfrastructureError, NotFoundError
+from app.models.user_model import ApprovalStatus, TeamMember, UserResponse, UserRole
 from app.services.firebase import FirebaseService
 
 
@@ -18,9 +19,9 @@ class UserService:
     Service for user-related operations
     """
 
-    def __init__(self):
-        """Initialize user service"""
-        self.firebase = FirebaseService()
+    def __init__(self, firebase: FirebaseService | None = None):
+        """Initialize user service (optional Firebase injection for Phase 9 DI)."""
+        self.firebase = firebase or FirebaseService()
 
     def create_user_with_firestore(
         self,
@@ -45,49 +46,34 @@ class UserService:
         Returns:
             True if successful
         """
-        try:
-            user_data = {
-                "name": name,
-                "email": email,
-                "role": role,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
-                **extra_fields,
-            }
-            if role in ("evaluator", "student") and approval_status is not None:
-                user_data["approval_status"] = approval_status
+        user_data = {
+            "name": name,
+            "email": email,
+            "role": role,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            **extra_fields,
+        }
+        if role in ("evaluator", "student") and approval_status is not None:
+            user_data["approval_status"] = approval_status
 
-            self.firebase.set_document("users", user_id, user_data)
-            logger.info(f"User created in Firestore: {user_id}")
-            return True
-        except Exception as e:
-            logger.error(f"Error creating user in Firestore: {str(e)}")
-            raise
+        self.firebase.set_document("users", user_id, user_data)
+        logger.info(f"User created in Firestore: {user_id}")
+        return True
 
     def get_user(self, user_id: str) -> Optional[dict[str, Any]]:
         """
-        Get user from Firestore
+        Get user from Firestore.
 
-        Args:
-            user_id: User ID
-
-        Returns:
-            User data or None
+        Returns ``None`` only when the profile document is missing. Infrastructure
+        failures propagate as ``InfrastructureError``.
         """
-        try:
-            return self.firebase.get_document("users", user_id)
-        except Exception as e:
-            logger.error(f"Error getting user: {str(e)}")
-            return None
+        return self.firebase.get_document("users", user_id)
 
     def find_by_field(self, field: str, value: str) -> Optional[dict[str, Any]]:
         """Find a user document by a unique field value."""
-        try:
-            matches = self.firebase.query_collection("users", field, "==", value)
-            return matches[0] if matches else None
-        except Exception as e:
-            logger.error("Error finding user by %s: %s", field, str(e))
-            return None
+        matches = self.firebase.query_collection("users", field, "==", value)
+        return matches[0] if matches else None
 
     def update_user(self, user_id: str, data: dict[str, Any]) -> bool:
         """
@@ -100,14 +86,10 @@ class UserService:
         Returns:
             True if successful
         """
-        try:
-            data["updated_at"] = datetime.utcnow().isoformat()
-            self.firebase.update_document("users", user_id, data)
-            logger.info(f"User updated: {user_id}")
-            return True
-        except Exception as e:
-            logger.error(f"Error updating user: {str(e)}")
-            raise
+        data["updated_at"] = datetime.utcnow().isoformat()
+        self.firebase.update_document("users", user_id, data)
+        logger.info(f"User updated: {user_id}")
+        return True
 
     def get_non_admin_users(self) -> list[dict[str, Any]]:
         """
@@ -116,31 +98,23 @@ class UserService:
         Returns:
             List of non-admin users
         """
-        try:
-            users = self.firebase.get_collection("users")
-            return [user for user in users if user.get("role") != "admin"]
-        except Exception as e:
-            logger.error(f"Error getting users: {str(e)}")
-            return []
+        users = self.firebase.get_collection("users")
+        return [user for user in users if user.get("role") != "admin"]
 
     def get_evaluators(self, approval_status: Optional[ApprovalStatus] = None) -> list[dict[str, Any]]:
         """Get evaluator users, optionally filtered by approval status."""
-        try:
-            users = self.firebase.query_collection("users", "role", "==", "evaluator")
-            if approval_status:
-                return [
-                    user for user in users if user.get("approval_status") == approval_status
-                ]
-            return users
-        except Exception as e:
-            logger.error("Error getting evaluators: %s", str(e))
-            return []
+        users = self.firebase.query_collection("users", "role", "==", "evaluator")
+        if approval_status:
+            return [
+                user for user in users if user.get("approval_status") == approval_status
+            ]
+        return users
 
     def approve_evaluator(self, user_id: str) -> dict[str, Any]:
         """Approve a pending evaluator account."""
         user_data = self.get_user(user_id)
         if not user_data:
-            raise ValueError("User not found")
+            raise NotFoundError("User not found")
         if user_data.get("role") != "evaluator":
             raise ValueError("User is not an evaluator")
         if user_data.get("approval_status") == "approved":
@@ -149,7 +123,7 @@ class UserService:
         self.update_user(user_id, {"approval_status": "approved"})
         updated = self.get_user(user_id)
         if not updated:
-            raise ValueError("Failed to load updated evaluator profile")
+            raise InfrastructureError("Failed to load updated evaluator profile")
         return updated
 
     def delete_user(self, user_id: str) -> bool:
@@ -162,31 +136,20 @@ class UserService:
         Returns:
             True if successful
         """
-        try:
-            self.firebase.delete_document("users", user_id)
-            self.firebase.delete_user(user_id)
-            logger.info(f"User deleted: {user_id}")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting user: {str(e)}")
-            raise
+        self.firebase.delete_document("users", user_id)
+        self.firebase.delete_user(user_id)
+        logger.info(f"User deleted: {user_id}")
+        return True
 
     def user_exists(self, email: str) -> bool:
         """
-        Check if user exists by email
+        Check if user exists by email.
 
-        Args:
-            email: User email
-
-        Returns:
-            True if user exists
+        Infrastructure failures propagate (must not return False on outage —
+        that would incorrectly allow duplicate registration).
         """
-        try:
-            users = self.firebase.query_collection("users", "email", "==", email)
-            return len(users) > 0
-        except Exception as e:
-            logger.error(f"Error checking user existence: {str(e)}")
-            return False
+        users = self.firebase.query_collection("users", "email", "==", email)
+        return len(users) > 0
 
     @staticmethod
     def to_user_response(user_id: str, user_data: dict[str, Any]) -> UserResponse:
@@ -208,6 +171,14 @@ class UserService:
             niat_id=user_data.get("niat_id"),
             employee_id=user_data.get("employee_id"),
             mobile_no=user_data.get("mobile_no"),
+            team_name=user_data.get("team_name"),
+            university=user_data.get("university"),
+            team_leader_name=user_data.get("team_leader_name"),
+            team_members=[
+                TeamMember(name=member["name"], email=member["email"])
+                for member in user_data.get("team_members", [])
+            ]
+            or None,
             approval_status=approval_status,
             created_at=user_data.get("created_at"),
             updated_at=user_data.get("updated_at"),

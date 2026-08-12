@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.9.0,<3.0.0",
     "firebase-admin==6.2.0",
     "google-cloud-storage>=2.19.0",
+    "google-cloud-tasks>=2.16.0,<3.0.0",
     "google-genai>=1.52.0,<3.0.0",
     "python-dotenv==1.0.0",
     "python-multipart>=0.0.9",
@@ -21,6 +22,7 @@ dependencies = [
 dev = [
     "pytest==7.4.3",
     "pytest-asyncio==0.21.1",
+    "httpx>=0.27.0",
     "black==23.12.0",
     "flake8==6.1.0",
     "mypy==1.7.1",
@@ -35,6 +37,33 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+ignore_missing_imports = true
+
+# Phase 11: gradual typing — start with leaf modules (models / exceptions / utils).
+[[tool.mypy.overrides]]
+module = [
+    "app.models.*",
+    "app.exceptions",
+    "app.utils.async_io",
+    "app.utils.auth_cookies",
+    "app.utils.cors_config",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.firebase",
+    "app.services.submission.*",
+    "google.*",
+    "firebase_admin.*",
+]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]

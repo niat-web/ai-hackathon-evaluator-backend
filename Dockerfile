@@ -17,8 +17,9 @@ COPY app/ ./app/
 # Note: Do not copy .env files to container
 # Use Cloud Run Environment Variables or Secret Manager instead
 
-# Expose port
+# Cloud Run injects PORT (default 8080). Honor it instead of hardcoding.
+ENV PORT=8080
 EXPOSE 8080
 
-# Run application (Cloud Run uses PORT environment variable)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Shell form so ${PORT} expands at runtime (Cloud Run / compose / local).
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
