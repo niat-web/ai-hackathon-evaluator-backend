@@ -8,8 +8,9 @@ optional nested segments (e.g. MVP feature checklist, GitHub visibility).
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Optional
+
+from app.utils.time import ISTDateTime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -284,8 +285,8 @@ class MetricScoringResponse(BaseModel):
     name: Optional[str] = None
     metrics: list[FieldScoringMetric]
     created_by: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: ISTDateTime
+    updated_at: ISTDateTime
 
 
 class ScoringPromptPlaceholder(BaseModel):

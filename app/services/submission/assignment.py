@@ -1,8 +1,8 @@
 """Evaluator assignment and divide-equally helpers."""
 
 from __future__ import annotations
+from app.utils.time import now_ist_iso
 
-from datetime import datetime
 from typing import Any
 
 
@@ -19,7 +19,7 @@ class AssignmentMixin:
         if evaluator_id is not None and str(evaluator_id).strip():
             evaluator = self._require_active_evaluator(evaluator_id.strip())
 
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
 
         def _txn(transaction):
             submission = self.firebase.txn_get(
@@ -98,7 +98,7 @@ class AssignmentMixin:
         random.shuffle(submissions)
         random.shuffle(evaluators)
 
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         operations: list[dict[str, Any]] = []
         planned: list[dict[str, Any]] = []
         for index, submission in enumerate(submissions):

@@ -8,7 +8,7 @@ collection and then link one to each hackathon round via its id.
 """
 
 import re
-from datetime import datetime
+from app.utils.time import ISTDateTime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -123,5 +123,5 @@ class EvaluationRequirementResponse(BaseModel):
     description: Optional[str] = None
     fields: list[RequirementField]
     created_by: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: ISTDateTime
+    updated_at: ISTDateTime

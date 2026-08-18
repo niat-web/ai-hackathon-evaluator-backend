@@ -3,9 +3,9 @@ AI evaluation prompt service — admin-editable Gemini templates in Firestore.
 """
 
 from __future__ import annotations
+from app.utils.time import now_ist_iso
 
 import logging
-from datetime import datetime
 from typing import Any
 
 from app.models.evaluation_prompt_model import (
@@ -49,7 +49,7 @@ class EvaluationPromptService:
         if document:
             return self._to_response(prompt_key, document)
 
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         meta = DEFAULT_PROMPT_META[prompt_key]
         return {
             "key": prompt_key,
@@ -83,7 +83,7 @@ class EvaluationPromptService:
         self._validate_placeholders(prompt_key, template)
 
         existing = self.firebase.get_document(self.collection, prompt_key)
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         meta = DEFAULT_PROMPT_META[prompt_key]
         document = {
             "name": meta["name"],
@@ -99,7 +99,7 @@ class EvaluationPromptService:
 
     def ensure_defaults(self, seeded_by: str = "system") -> None:
         """Idempotently write default templates when documents are missing."""
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         for key in PROMPT_KEYS:
             if self.firebase.get_document(self.collection, key):
                 continue

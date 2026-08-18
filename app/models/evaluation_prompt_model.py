@@ -7,7 +7,7 @@ Placeholders in templates must match the defaults in
 ``app.services.submission.prompts``.
 """
 
-from datetime import datetime
+from app.utils.time import ISTDateTime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -55,5 +55,5 @@ class EvaluationPromptResponse(BaseModel):
     template: str
     placeholders: list[str] = Field(default_factory=list)
     updated_by: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: ISTDateTime
+    updated_at: ISTDateTime

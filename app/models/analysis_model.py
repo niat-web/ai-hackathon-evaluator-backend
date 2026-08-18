@@ -2,7 +2,7 @@
 AI video analysis schemas (stored in the ``analysis`` Firestore collection).
 """
 
-from datetime import datetime
+from app.utils.time import ISTDateTime, OptionalISTDateTime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -37,10 +37,10 @@ class AnalysisResponse(BaseModel):
     report: Optional[str] = None
     field_scores: Optional[list[FieldScoreResult]] = None
     scorecard: Optional[ScorecardResult] = None
-    analyzed_at: Optional[datetime] = None
+    analyzed_at: OptionalISTDateTime = None
     error: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: ISTDateTime
+    updated_at: ISTDateTime
 
 
 class AnalysisSummary(BaseModel):
@@ -51,7 +51,7 @@ class AnalysisSummary(BaseModel):
     report: str
     field_scores: Optional[list[FieldScoreResult]] = None
     scorecard: Optional[ScorecardResult] = None
-    analyzed_at: datetime
+    analyzed_at: ISTDateTime
 
 
 class AnalysisReportResponse(BaseModel):
@@ -64,4 +64,4 @@ class AnalysisReportResponse(BaseModel):
     report: str
     field_scores: Optional[list[FieldScoreResult]] = None
     scorecard: Optional[ScorecardResult] = None
-    analyzed_at: datetime
+    analyzed_at: ISTDateTime

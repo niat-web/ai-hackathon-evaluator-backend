@@ -242,7 +242,7 @@ As wired in `app/main.py` + `cloudbuild.yaml`: CORS with `allow_credentials=True
 | Variable | Typical value |
 |----------|----------------|
 | `ENVIRONMENT` | `production` (disables `/docs`, `/redoc`, `/openapi.json` unless `ENABLE_API_DOCS=true`) |
-| `ALLOWED_ORIGINS` | `https://hackniat.vercel.app` |
+| `ALLOWED_ORIGINS` | `https://challazo.nxtlab.tech` |
 | `COOKIE_SAMESITE` | `none` (with Secure cookies) |
 
 CORS **methods/headers** default to the SPA allow-list (`GET/POST/PATCH/DELETE/…`, `Authorization`, `Content-Type`, `X-CSRF-Token`, `Range`, …). Set `CORS_ALLOW_METHODS=*` or `CORS_ALLOW_HEADERS=*` only if you need the old wildcards.
@@ -251,16 +251,24 @@ Frontend must send `credentials: "include"`.
 
 ### GCS CORS for direct uploads
 
-Applied in `cloudbuild.yaml` step 4 on `gs://$PROJECT_ID-hackathon-evaluations`:
+Applied in `cloudbuild.yaml` step 4 on `gs://$PROJECT_ID-hackathon-evaluations`. Origins come from the **`_GCS_CORS_ORIGINS`** substitution (comma-separated). Production default:
+
+```
+https://challazo.nxtlab.tech,http://localhost:3000,http://localhost:5173
+```
+
+Staging trigger override (see [Multi-environment deploy](#multi-environment-deploy-staging--production)):
+
+```
+https://challzo.vercel.app,http://localhost:3000,http://localhost:5173
+```
+
+Equivalent JSON shape:
 
 ```json
 [
   {
-    "origin": [
-      "https://hackniat.vercel.app",
-      "http://localhost:3000",
-      "http://localhost:5173"
-    ],
+    "origin": ["https://challazo.nxtlab.tech", "http://localhost:3000", "http://localhost:5173"],
     "method": ["GET", "PUT", "HEAD", "OPTIONS"],
     "responseHeader": ["Content-Type", "Content-Length", "x-goog-resumable"],
     "maxAgeSeconds": 3600
@@ -299,6 +307,92 @@ Locally, if Cloud Tasks env is unset, the app uses FastAPI `BackgroundTasks` (sa
 
 ---
 
+## Multi-environment deploy (staging + production)
+
+One **`cloudbuild.yaml`** in git; **two GCP projects** (separate accounts), each with its own Cloud Build trigger on a different branch. `$PROJECT_ID`, Secret Manager secrets, GCS bucket, and Cloud Run URL are isolated per project automatically.
+
+| | **Production** | **Staging** |
+|---|----------------|-------------|
+| Git branch | `master` | `dev-feature` |
+| GCP project | Production account | Staging account |
+| Frontend | `https://challazo.nxtlab.tech` | `https://challzo.vercel.app` |
+| Firebase | Production project | Staging project |
+
+### Cloud Build trigger setup
+
+Connect the **same GitHub repo** in each GCP project, then create one trigger per project:
+
+**Production trigger** (production GCP → branch `master`):
+
+| Field | Value |
+|-------|--------|
+| Config file | `cloudbuild.yaml` |
+| Branch | `^master$` |
+| Substitutions | *(use file defaults, or set explicitly)* |
+
+```
+_ALLOWED_ORIGINS = https://challazo.nxtlab.tech
+_GCS_CORS_ORIGINS = https://challazo.nxtlab.tech,http://localhost:3000,http://localhost:5173
+_ENVIRONMENT = production
+_SEED_ON_STARTUP = false
+```
+
+**Staging trigger** (staging GCP → branch `dev-feature`):
+
+| Field | Value |
+|-------|--------|
+| Config file | `cloudbuild.yaml` |
+| Branch | `^dev-feature$` |
+| Substitutions | **override all four** |
+
+```
+_ALLOWED_ORIGINS = https://challzo.vercel.app
+_GCS_CORS_ORIGINS = https://challzo.vercel.app,http://localhost:3000,http://localhost:5173
+_ENVIRONMENT = production
+_SEED_ON_STARTUP = true
+```
+
+In the GCP Console: **Cloud Build → Triggers → (your trigger) → Edit → Substitution variables**.
+
+### Secret Manager (per GCP project)
+
+Create the same secret **names** in each project with that environment's Firebase values:
+
+- `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_WEB_API_KEY`, `FIREBASE_DATABASE_URL`, `INTERNAL_JOB_SECRET`
+
+### Frontend API URL
+
+Point each frontend at its Cloud Run URL (Vercel env var, e.g. `VITE_API_URL`):
+
+- `challazo.nxtlab.tech` → production Cloud Run URL  
+- `challzo.vercel.app` → staging Cloud Run URL  
+
+### Merge workflow
+
+1. Develop on `dev-feature` → push → staging trigger deploys.  
+2. Test on `challzo.vercel.app`.  
+3. Merge `dev-feature` → `master` → push → production trigger deploys.  
+4. Rebase/merge `master` back into `dev-feature` to stay in sync.
+
+Merging does **not** swap prod/staging URLs — those live in trigger substitutions, not branch-specific YAML.
+
+### Manual deploy (optional)
+
+Production defaults:
+
+```bash
+gcloud builds submit --config=cloudbuild.yaml
+```
+
+Staging overrides:
+
+```bash
+gcloud builds submit --config=cloudbuild.yaml \
+  --substitutions=_ALLOWED_ORIGINS=https://challzo.vercel.app,_GCS_CORS_ORIGINS=https://challzo.vercel.app\,http://localhost:3000\,http://localhost:5173,_ENVIRONMENT=production,_SEED_ON_STARTUP=true
+```
+
+---
+
 ## Architecture & deployment (source of truth)
 
 These files define production architecture and deploy. Do not assume a different stack or pipeline.
@@ -333,14 +427,23 @@ Dev (optional `[dev]`): pytest, pytest-asyncio, black (line-length 100), flake8,
 1. Ensure Artifact Registry repo `ai-hackathon-evaluator-backend` in **asia-south1**  
 2. Build image → `asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA` (+ `:latest`)  
 3. Push `$SHORT_SHA` tag  
-4. Ensure bucket `gs://$PROJECT_ID-hackathon-evaluations` (create in **us-central1** if missing) and apply CORS for `https://hackniat.vercel.app`, `http://localhost:3000`, `http://localhost:5173`  
+4. Ensure bucket `gs://$PROJECT_ID-hackathon-evaluations` (create in **asia-south1** if missing) and apply GCS CORS from **`_GCS_CORS_ORIGINS`**  
 5. Ensure Cloud Tasks queue `evaluation-jobs` in **asia-south1**  
 6. Deploy Cloud Run service **`ai-hackathon-evaluator-backend`**:
    - region: **asia-south1**
    - `--allow-unauthenticated`
    - secrets: Firebase set + `INTERNAL_JOB_SECRET`
-   - env: production cookie/CORS/Gemini/GCS vars + `EVALUATION_JOB_MODE=cloud_tasks`, `CLOUD_TASKS_QUEUE=evaluation-jobs`, `CLOUD_TASKS_LOCATION=asia-south1`, then `CLOUD_TASKS_TARGET_URL=<service>/internal/jobs/evaluate-submission`
+   - env: `ENVIRONMENT`, `ALLOWED_ORIGINS`, `SEED_ON_STARTUP` from substitutions + cookie/CORS/Gemini/GCS vars + `EVALUATION_JOB_MODE=cloud_tasks`, `CLOUD_TASKS_QUEUE=evaluation-jobs`, `CLOUD_TASKS_LOCATION=asia-south1`, then `CLOUD_TASKS_TARGET_URL=<service>/internal/jobs/evaluate-submission`
    - **1Gi** memory, **1** CPU, **3600s** timeout
+
+**Substitution defaults** (production; override per trigger — see [Multi-environment deploy](#multi-environment-deploy-staging--production)):
+
+| Substitution | Default |
+|--------------|---------|
+| `_ALLOWED_ORIGINS` | `https://challazo.nxtlab.tech` |
+| `_GCS_CORS_ORIGINS` | `https://challazo.nxtlab.tech,http://localhost:3000,http://localhost:5173` |
+| `_ENVIRONMENT` | `production` |
+| `_SEED_ON_STARTUP` | `false` |
 
 Build options: `E2_HIGHCPU_8`, `CLOUD_LOGGING_ONLY`, build timeout `1800s`.
 

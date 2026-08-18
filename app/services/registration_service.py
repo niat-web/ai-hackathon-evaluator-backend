@@ -3,8 +3,8 @@ Registration service for student and evaluator sign-up.
 """
 
 import logging
-from datetime import datetime
 from typing import Any
+from app.utils.time import now_ist_iso
 
 from app.models.user_model import (
     ApprovalStatus,
@@ -180,7 +180,7 @@ class RegistrationService:
 
     @staticmethod
     def _timestamp_fields() -> dict[str, str]:
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         return {"created_at": now, "updated_at": now}
 
     def _student_firestore_data(

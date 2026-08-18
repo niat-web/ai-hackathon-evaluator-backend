@@ -2,7 +2,7 @@
 CORS and API docs configuration helpers (Phase 12).
 
 Production defaults shrink recon surface (no /docs) and CORS allow-lists to
-what the HackNIAT SPA actually sends, without changing functional API routes.
+what the Challazo SPA actually sends, without changing functional API routes.
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ DEFAULT_DEV_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
-    "https://hackniat.vercel.app",
+    "https://challzo.vercel.app",
 ]
 
 # Fallback when ALLOWED_ORIGINS is not set in production.
 DEFAULT_PROD_ORIGINS = [
-    "https://hackniat.vercel.app",
+    "https://challazo.nxtlab.tech",
 ]
 
 # Methods used by the SPA against this API (plus OPTIONS preflight / HEAD).

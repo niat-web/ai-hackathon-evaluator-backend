@@ -6,7 +6,7 @@ theme ids to a hackathon. Students pick a theme from that hackathon's list
 when submitting.
 """
 
-from datetime import datetime
+from app.utils.time import ISTDateTime
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -47,8 +47,8 @@ class ThemeResponse(BaseModel):
     name: str
     description: str
     created_by: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: ISTDateTime
+    updated_at: ISTDateTime
 
 
 class ThemeSummary(BaseModel):

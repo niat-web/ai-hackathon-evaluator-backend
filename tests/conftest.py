@@ -3,8 +3,8 @@ Shared fixtures for characterization / regression tests (Phase 0).
 """
 
 from __future__ import annotations
+from app.utils.time import now_ist_iso
 
-from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -70,7 +70,7 @@ def make_submission_doc(
     final_score: float | None = None,
 ) -> dict[str, Any]:
     """Minimal submission document matching production field names."""
-    now = datetime.utcnow().isoformat()
+    now = now_ist_iso()
     return {
         "id": submission_id,
         "student_id": student_id,

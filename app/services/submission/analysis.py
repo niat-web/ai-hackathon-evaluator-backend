@@ -1,12 +1,12 @@
 """AI analysis queueing, Gemini evaluation, and report publish helpers."""
 
 from __future__ import annotations
+from app.utils.time import now_ist_iso
 
 import json
 import logging
 import re
 import uuid
-from datetime import datetime
 from typing import Any
 
 from google import genai
@@ -40,7 +40,7 @@ class AnalysisMixin:
         both move the same submission into ``processing`` / overwrite analysis_id.
         """
         analysis_id = uuid.uuid4().hex
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         criteria = evaluation_criteria.strip() if evaluation_criteria else None
 
         def _txn(transaction):
@@ -218,7 +218,7 @@ class AnalysisMixin:
                     report_parts.extend(["", field_scores_section])
                 report = "\n".join(report_parts)
 
-            analyzed_at = datetime.utcnow().isoformat()
+            analyzed_at = now_ist_iso()
             self._commit_analysis_and_submission(
                 analysis_id,
                 submission_id,
@@ -320,7 +320,7 @@ class AnalysisMixin:
                 submission_id,
                 {
                     "report_published": True,
-                    "published_at": datetime.utcnow().isoformat(),
+                    "published_at": now_ist_iso(),
                     "published_by": admin_user_id,
                 },
             )
@@ -682,7 +682,7 @@ class AnalysisMixin:
         submission_data: dict[str, Any],
     ) -> None:
         """Atomically update analysis + submission (or submission alone on early fail)."""
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         operations: list[dict[str, Any]] = []
         if analysis_id and analysis_data is not None:
             analysis_payload = {**analysis_data, "updated_at": now}

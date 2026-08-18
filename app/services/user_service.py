@@ -3,8 +3,8 @@ User service for managing user operations
 """
 
 import logging
-from datetime import datetime
 from typing import Any, Optional
+from app.utils.time import now_ist_iso
 
 from app.exceptions import InfrastructureError, NotFoundError
 from app.models.user_model import ApprovalStatus, TeamMember, UserResponse, UserRole
@@ -50,8 +50,8 @@ class UserService:
             "name": name,
             "email": email,
             "role": role,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": now_ist_iso(),
+            "updated_at": now_ist_iso(),
             **extra_fields,
         }
         if role in ("evaluator", "student") and approval_status is not None:
@@ -86,7 +86,7 @@ class UserService:
         Returns:
             True if successful
         """
-        data["updated_at"] = datetime.utcnow().isoformat()
+        data["updated_at"] = now_ist_iso()
         self.firebase.update_document("users", user_id, data)
         logger.info(f"User updated: {user_id}")
         return True

@@ -2,8 +2,9 @@
 Student hackathon submission schemas.
 """
 
-from datetime import datetime
 from typing import Any, Literal, Optional
+
+from app.utils.time import ISTDateTime, OptionalISTDateTime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -101,14 +102,14 @@ class SubmissionResponse(BaseModel):
             "Set automatically when an admin approves the evaluation."
         ),
     )
-    published_at: Optional[datetime] = None
+    published_at: OptionalISTDateTime = None
     published_by: Optional[str] = None
     assigned_evaluator_id: Optional[str] = Field(
         None,
         description="Approved evaluator assigned to review this submission.",
     )
     assigned_evaluator_name: Optional[str] = None
-    assigned_at: Optional[datetime] = None
+    assigned_at: OptionalISTDateTime = None
     assigned_by: Optional[str] = None
     analyzed_by: Optional[str] = Field(
         None,
@@ -129,9 +130,9 @@ class SubmissionResponse(BaseModel):
         None,
         description="Optional notes from the evaluator when submitting for review.",
     )
-    submitted_for_review_at: Optional[datetime] = None
+    submitted_for_review_at: OptionalISTDateTime = None
     submitted_for_review_by: Optional[str] = None
-    reviewed_at: Optional[datetime] = None
+    reviewed_at: OptionalISTDateTime = None
     reviewed_by: Optional[str] = None
     review_notes: Optional[str] = Field(
         None,
@@ -200,8 +201,8 @@ class SubmissionResponse(BaseModel):
         None,
         description="Optional user-facing message (e.g. after successful submit).",
     )
-    created_at: datetime
-    updated_at: datetime
+    created_at: ISTDateTime
+    updated_at: ISTDateTime
 
 
 class EvaluateSubmissionRequest(BaseModel):

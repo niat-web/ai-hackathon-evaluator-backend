@@ -1,9 +1,9 @@
 """Shared SubmissionService state and low-level helpers."""
 
 from __future__ import annotations
+from app.utils.time import now_ist_iso
 
 import os
-from datetime import datetime
 from typing import Any
 
 from google import genai
@@ -75,7 +75,7 @@ class SubmissionServiceBase:
         return self.storage_client
 
     def _update_submission(self, submission_id: str, data: dict[str, Any]) -> None:
-        data["updated_at"] = datetime.utcnow().isoformat()
+        data["updated_at"] = now_ist_iso()
         self.firebase.update_document(self.collection, submission_id, data)
 
     def _resolve_student_team_name(self, student_id: str) -> str:

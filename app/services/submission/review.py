@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
+
+from app.utils.time import now_ist_iso
 
 from app.services.scorecard import (
     apply_ai_overrides,
@@ -25,7 +26,7 @@ class ReviewMixin:
     ) -> dict[str, Any]:
         """Assigned evaluator submits completed evaluation to admin."""
         notes = evaluator_notes.strip() if evaluator_notes else None
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         manual_payloads = [
             m if isinstance(m, dict) else m.model_dump() for m in (manual_metrics or [])
         ]
@@ -212,7 +213,7 @@ class ReviewMixin:
     ) -> dict[str, Any]:
         """Admin approves evaluation → final score + report become visible to student."""
         notes = review_notes.strip() if review_notes else None
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
 
         def _txn(transaction):
             submission = self.firebase.txn_get(
@@ -272,7 +273,7 @@ class ReviewMixin:
     ) -> dict[str, Any]:
         """Admin sends evaluation back to the assigned evaluator."""
         notes = review_notes.strip() if review_notes else None
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
 
         def _txn(transaction):
             submission = self.firebase.txn_get(

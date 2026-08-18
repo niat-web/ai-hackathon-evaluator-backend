@@ -1,12 +1,12 @@
 """Upload / create submission paths (multipart + signed URL)."""
 
 from __future__ import annotations
+from app.utils.time import now_ist_iso
 
 import logging
 import math
 import os
 import uuid
-from datetime import datetime
 from typing import Any, BinaryIO
 
 
@@ -498,7 +498,7 @@ class CreateMixin:
         now: str | None = None,
     ) -> dict[str, Any]:
         """Single document shape for multipart and signed-URL create paths."""
-        created_at = now or datetime.utcnow().isoformat()
+        created_at = now or now_ist_iso()
         answers = dict(field_answers or {})
         # Keep top-level PS/SD as the source of truth; mirror into field_answers.
         answers.setdefault("problem_statement", problem_statement.strip())

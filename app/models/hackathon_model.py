@@ -2,7 +2,9 @@
 Hackathon schemas (stored in the ``hackathons`` Firestore collection).
 """
 
-from datetime import date, datetime
+from datetime import date
+
+from app.utils.time import ISTDateTime
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -269,5 +271,5 @@ class HackathonResponse(BaseModel):
         description="Time-limited HTTPS URL for the banner image.",
     )
     created_by: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: ISTDateTime
+    updated_at: ISTDateTime

@@ -4,8 +4,8 @@ Database seeder - Initialize default data
 
 import logging
 import os
-from datetime import datetime
 from typing import Any, NotRequired, TypedDict
+from app.utils.time import now_ist_iso
 
 from app.models.user_model import ApprovalStatus, UserRole
 from app.services.firebase import FirebaseService
@@ -149,7 +149,7 @@ class DatabaseSeeder:
         """
         Build a Firestore user document using the same fields as registration.
         """
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         first_name, last_name = self._leader_name_parts(seed)
         profile: dict[str, Any] = {
             "first_name": first_name,

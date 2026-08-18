@@ -3,13 +3,13 @@ Application settings — admin Profile Password and Firestore DB reset.
 """
 
 from __future__ import annotations
+from app.utils.time import now_ist_iso
 
 import hashlib
 import hmac
 import logging
 import os
 import secrets
-from datetime import datetime
 from typing import Any
 
 from google.cloud import storage
@@ -85,7 +85,7 @@ class AppSettingsService:
         existing = self.firebase.get_document(SETTINGS_COLLECTION, SETTINGS_DOC_ID)
         if existing and existing.get("profile_password_hash"):
             return
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         salt, password_hash = self._hash_password(DEFAULT_PROFILE_PASSWORD)
         self.firebase.set_document(
             SETTINGS_COLLECTION,
@@ -109,7 +109,7 @@ class AppSettingsService:
         """Verify current Profile Password, then store a new hash."""
         if not self.verify_profile_password(current_password):
             raise ValueError("Current profile password is incorrect")
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         salt, password_hash = self._hash_password(new_password)
         existing = self._get_security_doc()
         self.firebase.set_document(

@@ -2,8 +2,9 @@
 User data models and schemas
 """
 
-from datetime import datetime
 from typing import Literal, Optional
+
+from app.utils.time import OptionalISTDateTime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -195,8 +196,8 @@ class UserResponse(BaseModel):
     team_leader_name: Optional[str] = None
     team_members: Optional[list[TeamMember]] = None
     approval_status: Optional[ApprovalStatus] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: OptionalISTDateTime = None
+    updated_at: OptionalISTDateTime = None
 
 
 class RegisterResponse(BaseModel):

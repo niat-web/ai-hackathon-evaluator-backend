@@ -4,8 +4,8 @@ Evaluation requirement service — reusable submission-field definitions.
 
 import logging
 import uuid
-from datetime import datetime
 from typing import Any
+from app.utils.time import now_ist_iso
 
 from app.models.evaluation_requirement_model import (
     EvaluationRequirementCreateRequest,
@@ -32,7 +32,7 @@ class EvaluationRequirementService:
     ) -> dict[str, Any]:
         """Create a reusable evaluation requirement."""
         requirement_id = uuid.uuid4().hex
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
 
         document = {
             "name": request.name.strip(),
@@ -82,7 +82,7 @@ class EvaluationRequirementService:
             update["fields"] = [field.model_dump() for field in request.fields]
 
         if update:
-            update["updated_at"] = datetime.utcnow().isoformat()
+            update["updated_at"] = now_ist_iso()
             self.firebase.update_document(self.collection, requirement_id, update)
 
         return self.get_requirement(requirement_id)

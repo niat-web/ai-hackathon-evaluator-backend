@@ -5,8 +5,9 @@ Hackathon service — admin-created hackathons with banner storage in GCS.
 import logging
 import os
 import uuid
-from datetime import datetime
 from typing import Any
+
+from app.utils.time import now_ist_iso
 
 from google.cloud import storage
 
@@ -56,7 +57,7 @@ class HackathonService:
         theme_ids = self.theme_service.validate_theme_ids(request.theme_ids)
 
         hackathon_id = uuid.uuid4().hex
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
 
         banner_path = None
         if banner is not None:
@@ -147,7 +148,7 @@ class HackathonService:
             raise ValueError("end_date cannot be earlier than start_date")
 
         if update:
-            update["updated_at"] = datetime.utcnow().isoformat()
+            update["updated_at"] = now_ist_iso()
             self.firebase.update_document(self.collection, hackathon_id, update)
 
         return self.get_hackathon(hackathon_id)

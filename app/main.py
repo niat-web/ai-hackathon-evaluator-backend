@@ -107,9 +107,13 @@ app.add_middleware(
 @app.get("/health", tags=["health"])
 async def health_check():
     """Health check endpoint"""
+    from app.utils.time import now_ist_iso
+
     return {
         "status": "healthy",
         "message": "AI Hackathon Evaluator Backend is running",
+        "timezone": "Asia/Kolkata",
+        "server_time": now_ist_iso(),
     }
 
 

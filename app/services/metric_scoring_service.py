@@ -7,8 +7,8 @@ requirement (AI + manual modes, nested segments).
 
 import logging
 import uuid
-from datetime import datetime
 from typing import Any
+from app.utils.time import now_ist_iso
 
 from app.models.metric_scoring_model import (
     DEFAULT_METRIC_COLORS,
@@ -64,7 +64,7 @@ class MetricScoringService:
             )
 
         scoring_id = uuid.uuid4().hex
-        now = datetime.utcnow().isoformat()
+        now = now_ist_iso()
         document = {
             "evaluation_requirement_id": request.evaluation_requirement_id,
             "name": (request.name or "").strip() or None,
@@ -166,7 +166,7 @@ class MetricScoringService:
             )
 
         if update:
-            update["updated_at"] = datetime.utcnow().isoformat()
+            update["updated_at"] = now_ist_iso()
             self.firebase.update_document(self.collection, scoring_id, update)
 
         return self.get_scoring(scoring_id)
