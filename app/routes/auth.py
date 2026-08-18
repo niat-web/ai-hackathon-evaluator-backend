@@ -8,7 +8,7 @@ import base64
 import json
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.middleware.auth_middleware import get_current_user
@@ -23,6 +23,7 @@ from app.models.user_model import (
     CurrentUser,
     EvaluatorRegisterRequest,
     LoginRequest,
+    CsrfTokenResponse,
     LoginResponse,
     RegisterResponse,
     StudentRegisterRequest,
@@ -33,7 +34,9 @@ from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
 from app.utils.async_io import run_sync
 from app.utils.auth_cookies import (
+    CSRF_COOKIE_NAME,
     clear_session_cookies,
+    new_csrf_token,
     require_current_password_on_change,
     set_auth_cookie,
     set_csrf_cookie,
@@ -111,8 +114,9 @@ async def login(
     """
     Login with email and password.
 
-    On success the Firebase ID token is stored in an HttpOnly cookie; it is
-    not returned in the response body.
+    On success the Firebase ID token is stored in an HttpOnly cookie (not in
+    the JSON body). ``csrf_token`` is returned in the body for cross-origin
+    SPAs that cannot read the API-domain cookie via ``document.cookie``.
     """
     try:
         project_id = os.getenv("FIREBASE_PROJECT_ID")
@@ -184,18 +188,20 @@ async def login(
 
         approval_status = RegistrationService.resolve_approval_status(user_data)
 
+        csrf_token = new_csrf_token()
         payload = LoginResponse(
             user_id=user.uid,
             email=user.email,
             name=user_data.get("name", ""),
             role=user_data.get("role", "student"),
             approval_status=approval_status,
+            csrf_token=csrf_token,
         ).model_dump()
 
         response = JSONResponse(content=payload)
         set_auth_cookie(response, id_token)
-        # Phase 5b: issue CSRF cookie for double-submit (enforcement is env-gated).
-        set_csrf_cookie(response)
+        # Phase 5b: double-submit CSRF (cookie + body for cross-origin SPAs).
+        set_csrf_cookie(response, token=csrf_token)
         return response
 
     except HTTPException:
@@ -208,6 +214,28 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         ) from e
+
+
+@router.get("/csrf", response_model=CsrfTokenResponse, status_code=200)
+async def get_csrf_token(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> JSONResponse:
+    """
+    Return the CSRF token for cross-origin SPAs (Vercel → Cloud Run).
+
+    ``document.cookie`` on the frontend origin cannot read ``csrf_token`` (it
+    is scoped to the API domain). Call after login or on app boot when the
+    session cookie is present; store the value and send ``X-CSRF-Token`` on
+    mutating requests.
+    """
+    _ = current_user
+    existing = request.cookies.get(CSRF_COOKIE_NAME)
+    token = existing or new_csrf_token()
+    response = JSONResponse(content=CsrfTokenResponse(csrf_token=token).model_dump())
+    if not existing:
+        set_csrf_cookie(response, token=token)
+    return response
 
 
 @router.post("/logout", status_code=200)

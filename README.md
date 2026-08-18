@@ -249,6 +249,27 @@ CORS **methods/headers** default to the SPA allow-list (`GET/POST/PATCH/DELETE/�
 
 Frontend must send `credentials: "include"`.
 
+### CSRF (cross-origin SPA)
+
+Production uses **cookie auth** (`access_token` HttpOnly cookie) plus **CSRF double-submit** (`CSRF_PROTECTION=true`).
+
+On **same-origin** (e.g. `localhost:5173` → `localhost:8000`), the SPA may read `csrf_token` from `document.cookie`.
+
+On **cross-origin** (e.g. `challzo.vercel.app` → `*.run.app`), `document.cookie` on the frontend **cannot** see API-domain cookies — use the token from the **JSON body** instead:
+
+| When | Endpoint | Action |
+|------|----------|--------|
+| Login | `POST /auth/login` | Response includes `csrf_token` — store it |
+| Page reload / boot | `GET /auth/csrf` | Call with session cookie; store returned `csrf_token` |
+| Logout | `POST /auth/logout` | Clear stored token |
+
+On every **POST / PUT / PATCH / DELETE** (cookie session):
+
+1. `credentials: "include"`
+2. Header `X-CSRF-Token: <stored csrf_token>`
+
+See [Frontend CSRF integration](#frontend-csrf-integration) below for copy-paste client code.
+
 ### GCS CORS for direct uploads
 
 Applied in `cloudbuild.yaml` step 4 on `gs://$PROJECT_ID-hackathon-evaluations`. Origins come from the **`_GCS_CORS_ORIGINS`** substitution (comma-separated). Production default:
@@ -390,6 +411,103 @@ Staging overrides:
 gcloud builds submit --config=cloudbuild.yaml \
   --substitutions=_ALLOWED_ORIGINS=https://challzo.vercel.app,_GCS_CORS_ORIGINS=https://challzo.vercel.app\,http://localhost:3000\,http://localhost:5173,_ENVIRONMENT=production,_SEED_ON_STARTUP=true
 ```
+
+---
+
+## Frontend CSRF integration
+
+Use this when the SPA and API are on **different origins** (Vercel + Cloud Run).
+
+### 1. Store the token (module-level or React context)
+
+```typescript
+// lib/csrf.ts
+let csrfToken: string | null = null;
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+}
+
+export function getCsrfToken(): string | null {
+  return csrfToken;
+}
+```
+
+### 2. After login — save `csrf_token` from JSON
+
+```typescript
+const res = await fetch(`${API_URL}/auth/login`, {
+  method: "POST",
+  credentials: "include",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ email, password }),
+});
+const data = await res.json();
+if (!res.ok) throw new Error(data.detail ?? "Login failed");
+
+setCsrfToken(data.csrf_token); // required for cross-origin
+// user profile: data.user_id, data.role, etc.
+```
+
+### 3. On app boot (page refresh) — fetch token if session may exist
+
+```typescript
+async function bootstrapCsrf() {
+  const res = await fetch(`${API_URL}/auth/csrf`, {
+    method: "GET",
+    credentials: "include",
+  });
+  if (res.ok) {
+    const { csrf_token } = await res.json();
+    setCsrfToken(csrf_token);
+  } else {
+    setCsrfToken(null);
+  }
+}
+```
+
+Call `bootstrapCsrf()` once when the app loads (e.g. in root layout / auth provider), before any mutating API calls.
+
+### 4. API client — attach header on mutating requests
+
+```typescript
+const UNSAFE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+export async function apiFetch(path: string, init: RequestInit = {}) {
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+
+  if (UNSAFE.has(method)) {
+    const token = getCsrfToken();
+    if (token) headers.set("X-CSRF-Token", token);
+  }
+
+  return fetch(`${API_URL}${path}`, {
+    ...init,
+    method,
+    credentials: "include",
+    headers,
+  });
+}
+```
+
+Use `apiFetch` for **all** authenticated calls, including:
+
+- `POST /admin/settings/change-profile-password`
+- `POST /admin/settings/reset-database`
+- `POST /auth/change-password`
+- submissions, hackathons, uploads metadata, etc.
+
+### 5. On logout — clear token
+
+```typescript
+await apiFetch("/auth/logout", { method: "POST" });
+setCsrfToken(null);
+```
+
+### Do not use `document.cookie` for CSRF cross-origin
+
+`document.cookie` on `challzo.vercel.app` will be empty for API cookies — that is normal. Always use login JSON or `GET /auth/csrf`.
 
 ---
 

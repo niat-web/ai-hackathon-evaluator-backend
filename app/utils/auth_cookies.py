@@ -16,7 +16,9 @@ AUTH_COOKIE_NAME = "access_token"
 # Firebase ID tokens expire in 3600 seconds.
 AUTH_COOKIE_MAX_AGE = 3600
 
-# Readable by JS so the SPA can mirror it in X-CSRF-Token (double-submit).
+# Readable by JS on same-origin SPAs; cross-origin clients must use the token
+# returned in the login / GET /auth/csrf JSON body (document.cookie cannot see
+# API-domain cookies from a different site, e.g. Vercel → Cloud Run).
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 CSRF_COOKIE_MAX_AGE = AUTH_COOKIE_MAX_AGE

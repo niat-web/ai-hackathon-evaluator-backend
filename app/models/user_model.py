@@ -244,7 +244,14 @@ class ChangePasswordRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """Schema for login response (token is stored in an HttpOnly cookie)."""
+    """
+    Schema for login response.
+
+    The Firebase ID token is stored in an HttpOnly ``access_token`` cookie.
+    ``csrf_token`` is also returned in the body for cross-origin SPAs (e.g.
+    Vercel frontend → Cloud Run API) where ``document.cookie`` cannot read
+    API-domain cookies — the SPA must echo it as ``X-CSRF-Token`` on POST/PUT/PATCH/DELETE.
+    """
 
     user_id: str
     email: str
@@ -252,6 +259,13 @@ class LoginResponse(BaseModel):
     role: UserRole
     approval_status: Optional[ApprovalStatus] = None
     message: str = "Login successful"
+    csrf_token: str
+
+
+class CsrfTokenResponse(BaseModel):
+    """CSRF token for cookie-authenticated cross-origin clients."""
+
+    csrf_token: str
 
 
 class CurrentUser(BaseModel):

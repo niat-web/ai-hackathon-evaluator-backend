@@ -167,3 +167,55 @@ def test_require_current_password_defaults_to_enabled(monkeypatch):
 
     monkeypatch.delenv("REQUIRE_CURRENT_PASSWORD_ON_CHANGE", raising=False)
     assert require_current_password_on_change() is True
+
+
+def test_get_csrf_returns_existing_cookie(monkeypatch, admin_user):
+    monkeypatch.setenv("CSRF_PROTECTION", "true")
+    from app.main import app
+    from app.middleware.auth_middleware import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: admin_user
+    try:
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        client.cookies.set(CSRF_COOKIE_NAME, "existing-csrf")
+        client.cookies.set(AUTH_COOKIE_NAME, "tok")
+        resp = client.get("/auth/csrf")
+        assert resp.status_code == 200
+        assert resp.json()["csrf_token"] == "existing-csrf"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_get_csrf_issues_cookie_when_missing(monkeypatch, admin_user):
+    monkeypatch.setenv("CSRF_PROTECTION", "true")
+    from app.main import app
+    from app.middleware.auth_middleware import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: admin_user
+    try:
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        client.cookies.set(AUTH_COOKIE_NAME, "tok")
+        resp = client.get("/auth/csrf")
+        assert resp.status_code == 200
+        token = resp.json()["csrf_token"]
+        assert token
+        assert resp.cookies.get(CSRF_COOKIE_NAME) == token
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_login_response_includes_csrf_token_field():
+    from app.models.user_model import LoginResponse
+
+    body = LoginResponse(
+        user_id="u1",
+        email="a@b.com",
+        name="Admin",
+        role="admin",
+        csrf_token="csrf-abc",
+    )
+    assert body.csrf_token == "csrf-abc"
