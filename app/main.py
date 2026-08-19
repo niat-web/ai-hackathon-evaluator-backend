@@ -149,7 +149,7 @@ async def app_error_handler(request, exc: AppError):
     logger.warning("AppError %s: %s", exc.status_code, exc.detail)
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={"detail": exc.client_detail()},
     )
 
 

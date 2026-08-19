@@ -7,7 +7,6 @@ import os
 import base64
 import json
 
-import requests
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
@@ -17,6 +16,7 @@ from app.dependencies import (
     get_firebase,
     get_registration_service,
     get_user_service,
+    get_verification_service,
 )
 from app.models.user_model import (
     ChangePasswordRequest,
@@ -26,12 +26,21 @@ from app.models.user_model import (
     CsrfTokenResponse,
     LoginResponse,
     RegisterResponse,
-    StudentRegisterRequest,
     UserResponse,
+)
+from app.models.verification_model import (
+    EmailSendOtpRequest,
+    EmailVerifyOtpRequest,
+    RegisterCompleteRequest,
+    RegisterStartRequest,
+    RegisterStartResponse,
+    VerificationOkResponse,
+    VerifyPhoneTokenRequest,
 )
 from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
+from app.services.verification_service import VerificationService
 from app.utils.async_io import run_sync
 from app.utils.auth_cookies import (
     CSRF_COOKIE_NAME,
@@ -47,34 +56,85 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/register/student", response_model=RegisterResponse, status_code=201)
-async def register_student(
-    request: StudentRegisterRequest,
-    registration_service: RegistrationService = Depends(get_registration_service),
-) -> RegisterResponse:
-    """
-    Register a new student team account.
+@router.post("/register/start", response_model=RegisterStartResponse, status_code=200)
+async def register_start(
+    payload: RegisterStartRequest,
+    request: Request,
+    verification: VerificationService = Depends(get_verification_service),
+) -> RegisterStartResponse:
+    """Create or extend a 30-minute verification session (email and/or mobile)."""
+    session_id = await run_sync(verification.start, payload, _client_ip(request))
+    return RegisterStartResponse(session_id=session_id)
 
-    Required: team name, university, team leader name and email, NIAT ID,
-    mobile number, password, and at least two additional team members
-    (team size 3–5). Team members 3 and 4 are optional. Theme is chosen later
-    when submitting to a hackathon.
+
+@router.post("/email/send-otp", response_model=VerificationOkResponse, status_code=200)
+async def send_email_otp(
+    payload: EmailSendOtpRequest,
+    request: Request,
+    verification: VerificationService = Depends(get_verification_service),
+) -> VerificationOkResponse:
+    """Email a 6-digit OTP (hash stored, plaintext never returned)."""
+    await run_sync(verification.send_email_otp, payload, _client_ip(request))
+    return VerificationOkResponse(message="Verification code sent")
+
+
+@router.post("/email/verify-otp", response_model=VerificationOkResponse, status_code=200)
+async def verify_email_otp(
+    payload: EmailVerifyOtpRequest,
+    verification: VerificationService = Depends(get_verification_service),
+) -> VerificationOkResponse:
+    await run_sync(verification.verify_email_otp, payload)
+    return VerificationOkResponse(email_verified=True, message="Email verified")
+
+
+@router.post("/verify-phone-token", response_model=VerificationOkResponse, status_code=200)
+async def verify_phone_token(
+    payload: VerifyPhoneTokenRequest,
+    verification: VerificationService = Depends(get_verification_service),
+) -> VerificationOkResponse:
     """
-    try:
-        return await run_sync(registration_service.register_student, request)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
-    except AppError:
-        raise
-    except Exception as e:
-        logger.exception("Student registration error")
+    Confirm Firebase Phone Auth. The temporary Phone Auth user is deleted
+    after the ID token is verified (see VerificationService.verify_phone_token).
+    """
+    await run_sync(verification.verify_phone_token, payload)
+    return VerificationOkResponse(phone_verified=True, message="Mobile number verified")
+
+
+@router.post("/register/complete", status_code=200)
+async def register_complete(
+    payload: RegisterCompleteRequest,
+    firebase: FirebaseService = Depends(get_firebase),
+    verification: VerificationService = Depends(get_verification_service),
+) -> JSONResponse:
+    """
+    Create the student account only after both email and phone are verified.
+    Issues the same session cookies as POST /auth/login.
+    """
+    created = await run_sync(verification.complete, payload)
+    id_token = await run_sync(
+        firebase.sign_in_get_id_token,
+        created["email"],
+        created["password"],
+    )
+    if not id_token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration failed",
-        ) from e
+            detail="Account created but sign-in failed. Please log in.",
+        )
+    csrf_token = new_csrf_token()
+    body = LoginResponse(
+        user_id=created["user_id"],
+        email=created["email"],
+        name=created["name"],
+        role=created["role"],
+        approval_status=created.get("approval_status"),
+        message="Registration successful",
+        csrf_token=csrf_token,
+    ).model_dump()
+    response = JSONResponse(content=body)
+    set_auth_cookie(response, id_token)
+    set_csrf_cookie(response, token=csrf_token)
+    return response
 
 
 @router.post("/register/evaluator", response_model=RegisterResponse, status_code=201)
@@ -145,10 +205,9 @@ async def login(
             )
 
         id_token = await run_sync(
-            _generate_id_token_via_rest_api,
+            firebase.sign_in_get_id_token,
             email,
             request.password,
-            web_api_key,
         )
         if not id_token:
             raise HTTPException(
@@ -322,31 +381,14 @@ async def change_password(
     clear_session_cookies(response)
     return response
 
-def _generate_id_token_via_rest_api(email: str, password: str, web_api_key: str) -> str:
-    """
-    Generate a Firebase ID token through the password sign-in REST API.
-    """
-    try:
-        response = requests.post(
-            "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword",
-            json={
-                "email": email,
-                "password": password,
-                "returnSecureToken": True,
-            },
-            params={"key": web_api_key},
-            timeout=10,
-        )
 
-        if response.status_code != 200:
-            logger.warning("Firebase password authentication failed: %s", response.status_code)
-            return ""
-
-        return response.json().get("idToken", "")
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error during Firebase authentication: {str(e)}")
-        return ""
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host or ""
+    return ""
 
 
 def _decode_unverified_payload(token: str) -> dict:

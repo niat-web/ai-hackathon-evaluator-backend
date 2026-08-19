@@ -6,6 +6,10 @@ substitutions:
   _GCS_CORS_ORIGINS: 'https://challazo.nxtlab.tech,http://localhost:3000,http://localhost:5173'
   _ENVIRONMENT: 'production'
   _SEED_ON_STARTUP: 'false'
+  # Brevo SMTP (non-secret). SMTP_USERNAME + SMTP_PASSWORD come from Secret Manager.
+  _SMTP_HOST: 'smtp-relay.brevo.com'
+  _SMTP_PORT: '587'
+  _SMTP_FROM: 'noreply@mail.nxtlab.tech'
 
 steps:
   # Step 1: Ensure Artifact Registry repository exists (required before first push)
@@ -101,7 +105,9 @@ steps:
           || gcloud tasks queues create evaluation-jobs --location=asia-south1
 
   # Step 6: Deploy to Cloud Run, then set Cloud Tasks target URL to this revision's URL
-  # Prerequisite: Secret Manager secret INTERNAL_JOB_SECRET must already exist (see README).
+  # Prerequisite: Secret Manager secrets must exist (see README):
+  #   FIREBASE_*, INTERNAL_JOB_SECRET, SMTP_USERNAME, SMTP_PASSWORD (Brevo).
+  #   Set SMTP_USERNAME secret to noreply@mail.nxtlab.tech; SMTP_FROM via _SMTP_FROM below.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: bash
     args:
@@ -112,8 +118,8 @@ steps:
           --image=asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA \
           --region=asia-south1 \
           --allow-unauthenticated \
-          --update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest \
-          --set-env-vars=ENVIRONMENT=${_ENVIRONMENT},DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=${_ALLOWED_ORIGINS},EVALUATION_JOB_MODE=cloud_tasks,CLOUD_TASKS_LOCATION=asia-south1,CLOUD_TASKS_QUEUE=evaluation-jobs,CSRF_PROTECTION=true,REQUIRE_CURRENT_PASSWORD_ON_CHANGE=true,SEED_ON_STARTUP=${_SEED_ON_STARTUP} \
+          --update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest,SMTP_USERNAME=SMTP_USERNAME:latest,SMTP_PASSWORD=SMTP_PASSWORD:latest \
+          --set-env-vars=ENVIRONMENT=${_ENVIRONMENT},DEBUG=false,EMAIL_PROVIDER=smtp,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_FROM=${_SMTP_FROM},SMTP_FROM_NAME=Challazo,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=${_ALLOWED_ORIGINS},EVALUATION_JOB_MODE=cloud_tasks,CLOUD_TASKS_LOCATION=asia-south1,CLOUD_TASKS_QUEUE=evaluation-jobs,CSRF_PROTECTION=true,REQUIRE_CURRENT_PASSWORD_ON_CHANGE=true,SEED_ON_STARTUP=${_SEED_ON_STARTUP} \
           --memory=1Gi \
           --cpu=1 \
           --timeout=3600

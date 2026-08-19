@@ -196,6 +196,8 @@ class UserResponse(BaseModel):
     team_leader_name: Optional[str] = None
     team_members: Optional[list[TeamMember]] = None
     approval_status: Optional[ApprovalStatus] = None
+    email_verified: Optional[bool] = None
+    phone_verified: Optional[bool] = None
     created_at: OptionalISTDateTime = None
     updated_at: OptionalISTDateTime = None
 

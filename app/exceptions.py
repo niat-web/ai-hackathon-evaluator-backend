@@ -14,10 +14,18 @@ class AppError(Exception):
     """Base error with an HTTP status and client-facing detail string."""
 
     status_code: int = status.HTTP_400_BAD_REQUEST
+    code: str | None = None
 
-    def __init__(self, detail: str):
+    def __init__(self, detail: str, *, code: str | None = None):
         self.detail = detail
+        if code is not None:
+            self.code = code
         super().__init__(detail)
+
+    def client_detail(self) -> str | dict[str, str]:
+        if self.code:
+            return {"code": self.code, "message": self.detail}
+        return self.detail
 
 
 class BadRequestError(AppError):
@@ -38,6 +46,10 @@ class NotFoundError(AppError):
 
 class ConflictError(AppError):
     status_code = status.HTTP_409_CONFLICT
+
+
+class TooManyRequestsError(AppError):
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
 
 
 class PayloadTooLargeError(AppError):
@@ -76,4 +88,4 @@ def http_exception_from_value_error(exc: ValueError) -> HTTPException:
 
 
 def http_exception_from_app_error(exc: AppError) -> HTTPException:
-    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+    return HTTPException(status_code=exc.status_code, detail=exc.client_detail())

@@ -43,6 +43,8 @@ def test_build_app_container_shares_firebase_and_storage():
     assert container.submission_service.user_service is container.user_service
     assert container.submission_service.hackathon_service is container.hackathon_service
     assert container.evaluation_job_service._submission_service is container.submission_service
+    assert container.verification_service.firebase is fake_firebase
+    assert container.verification_service.user_service is container.user_service
     build_gcs.assert_called_once_with("proj-1")
 
 

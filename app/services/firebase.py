@@ -269,6 +269,43 @@ class FirebaseService:
             logger.exception("Firebase Auth get_user_by_email failed")
             raise InfrastructureError("Firebase Auth is temporarily unavailable") from e
 
+    def get_user_by_phone(self, phone_number: str) -> Any:
+        """Return Auth user by E.164 phone, or None if missing."""
+        try:
+            return self._auth.get_user_by_phone_number(phone_number)
+        except auth.UserNotFoundError:
+            return None
+        except Exception as e:
+            logger.exception("Firebase Auth get_user_by_phone_number failed")
+            raise InfrastructureError("Firebase Auth is temporarily unavailable") from e
+
+    def sign_in_get_id_token(self, email: str, password: str) -> str:
+        """Mint a Firebase ID token via Identity Toolkit (same as login)."""
+        web_api_key = os.getenv("FIREBASE_WEB_API_KEY")
+        if not web_api_key:
+            raise ValueError("Firebase configuration error")
+
+        import requests
+
+        try:
+            response = requests.post(
+                "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword",
+                json={
+                    "email": email.lower().strip(),
+                    "password": password,
+                    "returnSecureToken": True,
+                },
+                params={"key": web_api_key},
+                timeout=10,
+            )
+        except requests.exceptions.RequestException as e:
+            logger.error("Network error signing in: %s", str(e))
+            raise Exception("Error signing in") from e
+
+        if response.status_code != 200:
+            return ""
+        return response.json().get("idToken", "") or ""
+
     # ==================== Firestore Methods ====================
 
     def set_document(

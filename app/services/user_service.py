@@ -180,6 +180,8 @@ class UserService:
             ]
             or None,
             approval_status=approval_status,
+            email_verified=user_data.get("email_verified"),
+            phone_verified=user_data.get("phone_verified"),
             created_at=user_data.get("created_at"),
             updated_at=user_data.get("updated_at"),
         )

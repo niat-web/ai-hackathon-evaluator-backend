@@ -115,6 +115,9 @@ def test_reset_database_wipes_collections_and_keeps_admins(monkeypatch):
 
     assert "hackathons" in result["deleted_counts"]
     assert "ai_evaluation_prompts" in result["deleted_counts"]
+    assert result["deleted_counts"]["verification_sessions"] == 2
+    assert result["deleted_counts"]["otp_rate_limits"] == 2
+    assert result["deleted_counts"]["mail"] == 2
     assert result["deleted_counts"]["users_non_admin"] == 2
     # ensure delete_documents was called for users with only non-admins
     user_delete_calls = [

@@ -57,3 +57,4 @@ logs/
 
 # Dependencies
 uv.lock
+node_modules/

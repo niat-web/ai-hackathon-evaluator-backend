@@ -27,6 +27,7 @@ from app.services.registration_service import RegistrationService
 from app.services.submission_service import SubmissionService
 from app.services.theme_service import ThemeService
 from app.services.user_service import UserService
+from app.services.verification_service import VerificationService
 from app.utils.gcs_video import build_storage_client
 
 if TYPE_CHECKING:
@@ -60,6 +61,7 @@ class AppContainer:
     submission_service: SubmissionService
     evaluation_job_service: EvaluationJobService
     app_settings_service: AppSettingsService
+    verification_service: VerificationService
 
 
 def build_app_container() -> AppContainer:
@@ -107,6 +109,10 @@ def build_app_container() -> AppContainer:
         firebase=firebase,
         storage_client=storage_client,
     )
+    verification_service = VerificationService(
+        firebase=firebase,
+        user_service=user_service,
+    )
 
     logger.info("App service container initialized (shared Firebase + GCS clients)")
     return AppContainer(
@@ -122,6 +128,7 @@ def build_app_container() -> AppContainer:
         submission_service=submission_service,
         evaluation_job_service=evaluation_job_service,
         app_settings_service=app_settings_service,
+        verification_service=verification_service,
     )
 
 
@@ -189,3 +196,7 @@ def get_evaluation_job_service(request: Request) -> EvaluationJobService:
 
 def get_app_settings_service(request: Request) -> AppSettingsService:
     return get_container(request).app_settings_service
+
+
+def get_verification_service(request: Request) -> VerificationService:
+    return get_container(request).verification_service

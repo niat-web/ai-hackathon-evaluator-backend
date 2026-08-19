@@ -165,6 +165,8 @@ class DatabaseSeeder:
             profile["approval_status"] = seed.get("approval_status", "pending")
         elif seed["role"] == "student":
             profile["approval_status"] = seed.get("approval_status", "approved")
+            profile["email_verified"] = True
+            profile["phone_verified"] = True
 
         if seed["role"] == "student":
             profile["niat_id"] = seed["niat_id"]
@@ -225,6 +227,7 @@ class DatabaseSeeder:
                 self.seed_user(seed_user)
 
             self._seed_profile_password()
+            self._backfill_legacy_users()
 
             logger.info("\nDatabase seeding completed successfully!")
             return True
@@ -240,3 +243,13 @@ class DatabaseSeeder:
             AppSettingsService(firebase=self.firebase).ensure_default_profile_password()
         except Exception as e:
             logger.warning("Could not seed admin Profile Password: %s", str(e))
+
+    def _backfill_legacy_users(self) -> None:
+        try:
+            from app.utils.backfill_user_verification import (
+                backfill_legacy_user_verification,
+            )
+
+            backfill_legacy_user_verification(self.firebase)
+        except Exception as e:
+            logger.warning("Could not backfill user verification fields: %s", str(e))

@@ -15,7 +15,9 @@ from typing import Any
 from google.cloud import storage
 
 from app.models.settings_model import RESET_CONFIRM_PHRASE
+from app.services.email_service import MAIL_COLLECTION
 from app.services.firebase import FirebaseService
+from app.services.verification_service import RATE_LIMITS, SESSIONS
 from app.utils.gcs_video import (
     build_storage_client,
     resolve_evaluation_bucket_name,
@@ -38,6 +40,10 @@ WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "ai_evaluation_prompt",
     "submissions",
     "analysis",
+    # Ephemeral registration / email queue (not preserved on reset).
+    SESSIONS,
+    RATE_LIMITS,
+    MAIL_COLLECTION,
 )
 
 # Known AI prompt document ids — deleted explicitly so a listing miss cannot
@@ -150,6 +156,9 @@ class AppSettingsService:
         """
         Wipe application Firestore collections, non-admin Firebase Auth
         accounts, and all objects in the evaluation GCS bucket.
+
+        Also clears ephemeral registration data: ``verification_sessions``,
+        ``otp_rate_limits``, and queued ``mail`` documents.
 
         Preserves:
         - ``app_settings/security`` (Profile Password)
