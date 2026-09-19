@@ -68,6 +68,7 @@ def make_submission_doc(
     analysis_id: str | None = "analysis-1",
     report_published: bool = False,
     final_score: float | None = None,
+    hackathon_team_id: str | None = None,
 ) -> dict[str, Any]:
     """Minimal submission document matching production field names."""
     now = now_ist_iso()
@@ -75,6 +76,7 @@ def make_submission_doc(
         "id": submission_id,
         "student_id": student_id,
         "hackathon_id": hackathon_id,
+        "hackathon_team_id": hackathon_team_id,
         "hackathon_name": "Idea2Impact",
         "team_name": "team peek",
         "theme_id": "theme-1",

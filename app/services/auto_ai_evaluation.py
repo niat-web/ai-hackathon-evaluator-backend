@@ -10,16 +10,27 @@ from fastapi import BackgroundTasks
 from app.services.evaluation_job_service import EvaluationJobService
 from app.services.submission_service import SubmissionService
 from app.utils.async_io import run_sync
+from app.utils.hackathon_round import submission_auto_ai_enabled
 
 
 logger = logging.getLogger(__name__)
 
 
 def hackathon_auto_ai_enabled(hackathon: dict[str, Any] | None) -> bool:
-    """Legacy docs without the flag keep manual (button) mode."""
+    """
+    Legacy helper: true when any timeline round (or hackathon default) enables auto AI.
+
+    Prefer ``submission_auto_ai_enabled`` for per-submission checks.
+    """
     if not hackathon:
         return False
-    return bool(hackathon.get("auto_ai_evaluation", False))
+    if hackathon.get("auto_ai_evaluation"):
+        return True
+    for round_ in hackathon.get("timeline") or []:
+        data = round_ if isinstance(round_, dict) else round_.model_dump()
+        if data.get("auto_ai_evaluation"):
+            return True
+    return False
 
 
 def should_queue_auto_evaluation(submission: dict[str, Any]) -> bool:
@@ -45,7 +56,7 @@ async def queue_auto_ai_evaluations(
     hackathon: dict[str, Any] | None = None,
 ) -> int:
     """
-    When the hackathon has ``auto_ai_evaluation=true``, mark + enqueue AI jobs
+    When a submission's round has ``auto_ai_evaluation=true``, mark + enqueue AI jobs
     for eligible submissions. Returns how many jobs were queued.
 
     Failures are logged per submission and do not fail the assign request.
@@ -61,13 +72,12 @@ async def queue_auto_ai_evaluations(
                 service.hackathon_service.get_hackathon, hackathon_id
             )
 
-    if not hackathon_auto_ai_enabled(resolved_hackathon):
-        return 0
-
     queued = 0
     for submission in submissions:
         submission_id = submission.get("id")
         if not submission_id or not should_queue_auto_evaluation(submission):
+            continue
+        if not submission_auto_ai_enabled(resolved_hackathon, submission):
             continue
         try:
             await run_sync(

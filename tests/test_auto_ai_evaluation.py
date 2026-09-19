@@ -71,8 +71,12 @@ async def test_queue_auto_ai_skips_when_flag_off():
     service.mark_queued_for_evaluation.assert_not_called()
 
 
+def test_hackathon_auto_ai_true_when_any_round_enabled():
+    assert hackathon_auto_ai_enabled({"timeline": [{"auto_ai_evaluation": True}]}) is True
+
+
 @pytest.mark.asyncio
-async def test_queue_auto_ai_enqueues_when_flag_on():
+async def test_queue_auto_ai_uses_round_flag_on_submission():
     from app.services.auto_ai_evaluation import queue_auto_ai_evaluations
 
     service = MagicMock()
@@ -84,7 +88,46 @@ async def test_queue_auto_ai_enqueues_when_flag_on():
         "app.services.auto_ai_evaluation.run_sync",
         new_callable=AsyncMock,
     ) as run_sync:
-        # mark_queued returns analysis id; only one run_sync call expected for mark
+        run_sync.return_value = "analysis-1"
+        queued = await queue_auto_ai_evaluations(
+            service=service,
+            job_service=job_service,
+            background_tasks=bg,
+            submissions=[
+                {
+                    "id": "s1",
+                    "assigned_evaluator_id": "e1",
+                    "status": "uploaded",
+                    "hackathon_id": "h1",
+                    "round_index": 0,
+                    "auto_ai_evaluation": True,
+                }
+            ],
+            analyzed_by="admin-1",
+            hackathon={
+                "id": "h1",
+                "auto_ai_evaluation": False,
+                "timeline": [{"title": "R1", "auto_ai_evaluation": True}],
+            },
+        )
+
+    assert queued == 1
+    job_service.enqueue_background.assert_called_once_with("s1", None, bg)
+
+
+@pytest.mark.asyncio
+async def test_queue_auto_ai_enqueues_when_hackathon_flag_on():
+    from app.services.auto_ai_evaluation import queue_auto_ai_evaluations
+
+    service = MagicMock()
+    job_service = MagicMock()
+    job_service.resolve_mode.return_value = "background"
+    bg = MagicMock()
+
+    with patch(
+        "app.services.auto_ai_evaluation.run_sync",
+        new_callable=AsyncMock,
+    ) as run_sync:
         run_sync.return_value = "analysis-1"
         queued = await queue_auto_ai_evaluations(
             service=service,

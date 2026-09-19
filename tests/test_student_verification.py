@@ -318,3 +318,65 @@ def test_complete_rejects_swapped_email():
             )
         )
     assert exc.value.code == "IDENTIFIER_MISMATCH"
+
+
+def test_shared_ip_allows_many_different_emails():
+    """Campus NAT: many students, one public IP — must not hit RATE_LIMITED."""
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, _, email = _service(now)
+    shared_ip = "203.0.113.10"
+    for index in range(8):
+        address = f"student{index}@example.com"
+        phone = f"+91987654000{index}"
+        session_id = service.start(
+            RegisterStartRequest(email=address, mobile_number=phone)
+        )
+        service.send_email_otp(
+            EmailSendOtpRequest(session_id=session_id, email=address),
+            client_ip=shared_ip,
+        )
+    assert email.sent_to == [f"student{i}@example.com" for i in range(8)]
+
+
+def test_same_email_still_limited_to_five_sends_per_hour():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    current = {"t": now}
+    service, _, _ = _service(now)
+    service._now = lambda: current["t"]
+    session_id = service.start(
+        RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
+    )
+    payload = EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
+    for _ in range(5):
+        service.send_email_otp(payload, client_ip="203.0.113.10")
+        current["t"] = current["t"] + timedelta(minutes=2)
+    with pytest.raises(TooManyRequestsError) as exc:
+        service.send_email_otp(payload, client_ip="203.0.113.10")
+    assert exc.value.code == "RATE_LIMITED"
+
+
+def test_low_ip_cap_still_blocks_when_configured(monkeypatch):
+    monkeypatch.setenv("OTP_MAX_SENDS_PER_IP_PER_HOUR", "2")
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, _, _ = _service(now)
+    shared_ip = "203.0.113.10"
+    for index in range(2):
+        address = f"user{index}@example.com"
+        session_id = service.start(
+            RegisterStartRequest(
+                email=address, mobile_number=f"+91987654100{index}"
+            )
+        )
+        service.send_email_otp(
+            EmailSendOtpRequest(session_id=session_id, email=address),
+            client_ip=shared_ip,
+        )
+    session_id = service.start(
+        RegisterStartRequest(email="user2@example.com", mobile_number="+919876541002")
+    )
+    with pytest.raises(TooManyRequestsError) as exc:
+        service.send_email_otp(
+            EmailSendOtpRequest(session_id=session_id, email="user2@example.com"),
+            client_ip=shared_ip,
+        )
+    assert exc.value.code == "RATE_LIMITED"

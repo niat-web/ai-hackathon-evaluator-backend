@@ -17,6 +17,22 @@ from app.utils.video_upload import MAX_VIDEO_UPLOAD_BYTES
 SubmissionStatus = Literal["uploaded", "processing", "completed", "failed"]
 ReviewStatus = Literal["none", "pending_review", "approved", "changes_requested"]
 VideoSource = Literal["recorded", "uploaded"]
+GithubAiStatus = Literal["none", "processing", "completed", "failed"]
+
+
+class GithubAiEvaluationResult(BaseModel):
+    """Stored result from the external GitHub AI analyzer."""
+
+    github_url: str
+    context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Analyzer SubmissionContext: provided_context + rubrics.",
+    )
+    score: Optional[float] = None
+    max_score: Optional[float] = None
+    rationale: Optional[str] = None
+    segments: Optional[list[dict[str, Any]]] = None
+    analyzed_at: OptionalISTDateTime = None
 
 
 class HackathonSubmissionSummary(BaseModel):
@@ -35,6 +51,15 @@ class HackathonSubmissionSummary(BaseModel):
             "evaluators see the AI Evaluation button."
         ),
     )
+    export_spreadsheet_url: Optional[str] = Field(
+        None,
+        description="Google Sheets URL for admin submission export (admin UI only).",
+    )
+    export_spreadsheet_synced_at: Optional[ISTDateTime] = Field(
+        None,
+        description="Last Google Sheets export sync time (admin UI only).",
+    )
+
 
 class AcceptedVideoTypesResponse(BaseModel):
     """Constraints for Record demo vs Upload from disk pickers."""
@@ -69,9 +94,25 @@ class SubmissionResponse(BaseModel):
     student_id: str
     hackathon_id: str
     hackathon_name: str
+    round_index: int = Field(
+        0,
+        description="0-based index into the hackathon timeline (submission round).",
+    )
+    round_title: str = Field(
+        "",
+        description="Title of the timeline round this submission belongs to.",
+    )
+    working_demo_video_required: bool = Field(
+        True,
+        description="Snapshot of the round flag at submit time.",
+    )
     team_name: str
     theme_id: str
     theme_name: str
+    theme_description: str = Field(
+        "",
+        description="Snapshot of the selected theme's description at submit time.",
+    )
     problem_statement: str
     solution_description: str
     mvp_link: Optional[str] = Field(
@@ -177,6 +218,47 @@ class SubmissionResponse(BaseModel):
             "submission is not already processing."
         ),
     )
+    github_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, evaluators may run AI GitHub repository analysis for "
+            "this submission's round."
+        ),
+    )
+    github_ai_status: GithubAiStatus = Field(
+        "none",
+        description="GitHub AI evaluation job status.",
+    )
+    github_ai_result: Optional[GithubAiEvaluationResult] = Field(
+        None,
+        description="Latest GitHub AI evaluation output (staff only).",
+    )
+    github_ai_error: Optional[str] = Field(
+        None,
+        description="Error message when github_ai_status=failed (staff only).",
+    )
+    show_github_ai_evaluation_button: bool = Field(
+        False,
+        description=(
+            "True when evaluator may trigger GitHub AI analysis "
+            "(round flag on, GitHub link present, not processing)."
+        ),
+    )
+    leaderboard_published: bool = Field(
+        False,
+        description="True when this submission's round leaderboard is visible to students.",
+    )
+    leaderboard_rank: Optional[int] = Field(
+        None,
+        description=(
+            "1-based competition rank on the round leaderboard. Students only "
+            "receive this after the admin publishes the leaderboard."
+        ),
+    )
+    leaderboard_rank_label: Optional[str] = Field(
+        None,
+        description='Ordinal label such as "1st" or "2nd".',
+    )
     scorecard: Optional[ScorecardResult] = Field(
         None,
         description=(
@@ -205,6 +287,24 @@ class SubmissionResponse(BaseModel):
     updated_at: ISTDateTime
 
 
+class SubmissionTeamMember(BaseModel):
+    """One roster row for the submission team dialog."""
+
+    user_id: str
+    name: str
+    email: str = ""
+    role: Literal["leader", "member"] = "member"
+
+
+class SubmissionTeamResponse(BaseModel):
+    """Team roster behind a submission (admin table click-through)."""
+
+    team_id: Optional[str] = None
+    team_name: str = ""
+    is_solo: bool = False
+    members: list[SubmissionTeamMember] = Field(default_factory=list)
+
+
 class EvaluateSubmissionRequest(BaseModel):
     """Optional body when starting AI analysis on a submission."""
 
@@ -226,7 +326,10 @@ class ManualSegmentInput(BaseModel):
     key: str = Field(..., min_length=1, max_length=100)
     value: Optional[Any] = Field(
         None,
-        description="For boolean/enum segments (true/false, 'public'/'private').",
+        description=(
+            "Boolean true/false, or enum option value "
+            "(e.g. 'public', 'full', 'partial', 'none')."
+        ),
     )
     score: Optional[float] = Field(
         None,
@@ -317,21 +420,11 @@ class SubmitForReviewRequest(BaseModel):
     def require_score_or_manual(self) -> "SubmitForReviewRequest":
         if self.override_ai_scores:
             if not self.ai_overrides:
-                raise ValueError(
-                    "ai_overrides is required when override_ai_scores is true"
-                )
+                raise ValueError("ai_overrides is required when override_ai_scores is true")
         elif self.ai_overrides:
-            raise ValueError(
-                "ai_overrides must be omitted when override_ai_scores is false"
-            )
-        if (
-            self.final_score is None
-            and not self.manual_metrics
-            and not self.override_ai_scores
-        ):
-            raise ValueError(
-                "Provide manual_metrics (preferred) and/or final_score"
-            )
+            raise ValueError("ai_overrides must be omitted when override_ai_scores is false")
+        if self.final_score is None and not self.manual_metrics and not self.override_ai_scores:
+            raise ValueError("Provide manual_metrics (preferred) and/or final_score")
         return self
 
 
@@ -528,6 +621,11 @@ class CreateSubmissionFromUploadRequest(BaseModel):
     source_filename: Optional[str] = Field(None, max_length=500)
     hackathon_id: str = Field(..., min_length=1)
     theme_id: str = Field(..., min_length=1)
+    round_index: int = Field(
+        ...,
+        ge=0,
+        description="0-based timeline round index for this submission.",
+    )
     problem_statement: str = Field(..., min_length=1, max_length=5000)
     solution_description: str = Field(..., min_length=1, max_length=5000)
     mvp_link: Optional[str] = Field(None, max_length=2000)
@@ -563,4 +661,3 @@ class CreateSubmissionFromUploadRequest(BaseModel):
     @classmethod
     def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
         return strip_optional(value)
-

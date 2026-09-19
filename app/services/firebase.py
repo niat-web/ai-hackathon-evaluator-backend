@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 import firebase_admin
 from firebase_admin import auth, credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.exceptions import InfrastructureError
 
@@ -174,6 +175,13 @@ class FirebaseService:
         """
         try:
             self._auth.update_user(user_id, password=new_password)
+            try:
+                self._auth.revoke_refresh_tokens(user_id)
+            except Exception:
+                logger.warning(
+                    "Password updated for %s but refresh-token revoke failed",
+                    user_id,
+                )
             logger.info(f"Password updated for user: {user_id}")
             return True
         except auth.UserNotFoundError:
@@ -487,18 +495,12 @@ class FirebaseService:
         ``InfrastructureError``.
         """
         try:
-            query = self._db.collection(collection)
+            if operator not in {"==", "<", ">", "<=", ">="}:
+                raise ValueError(f"Unsupported Firestore operator: {operator}")
 
-            if operator == "==":
-                query = query.where(field, "==", value)
-            elif operator == "<":
-                query = query.where(field, "<", value)
-            elif operator == ">":
-                query = query.where(field, ">", value)
-            elif operator == "<=":
-                query = query.where(field, "<=", value)
-            elif operator == ">=":
-                query = query.where(field, ">=", value)
+            query = self._db.collection(collection).where(
+                filter=FieldFilter(field, operator, value)
+            )
 
             docs = query.stream()
             return [{"id": doc.id, **doc.to_dict()} for doc in docs]

@@ -38,6 +38,71 @@ class TimelineRound(BaseModel):
         None,
         description="Id of a reusable evaluation requirement linked to this round.",
     )
+    max_team_size: int = Field(
+        1,
+        ge=1,
+        le=4,
+        description=(
+            "Max participants for this round's team including the leader "
+            "(1 = Solo, 2–4 = team submission)."
+        ),
+    )
+    team_mode_label: Optional[str] = Field(
+        None,
+        description="Read-only label derived from max_team_size (Solo, 2 Members, …).",
+    )
+    working_demo_video_required: bool = Field(
+        True,
+        description=(
+            "When true, students must record or upload a working demo video for "
+            "this round. When false, text fields alone are enough."
+        ),
+    )
+    auto_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, AI evaluation is queued automatically when submissions "
+            "for this round are assigned to evaluators."
+        ),
+    )
+    github_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, evaluators can run AI-based GitHub repository analysis "
+            "for submissions that include a GitHub link."
+        ),
+    )
+    published: bool = Field(
+        False,
+        description="When true, students can see and participate in this round.",
+    )
+    published_at: Optional[str] = Field(
+        None,
+        description="IST timestamp when the admin published this round.",
+    )
+    published_by: Optional[str] = Field(
+        None,
+        description="Admin user id who published this round.",
+    )
+    leaderboard_published: bool = Field(
+        False,
+        description=(
+            "When true, students can see this round's ranked leaderboard. "
+            "Set via POST /hackathons/{id}/rounds/{index}/leaderboard/publish."
+        ),
+    )
+    leaderboard_published_at: Optional[str] = Field(
+        None,
+        description="IST timestamp when the admin published the leaderboard.",
+    )
+    leaderboard_published_by: Optional[str] = Field(
+        None,
+        description="Admin user id who published the leaderboard.",
+    )
+    round_status: Optional[str] = Field(
+        None,
+        description="Computed: draft | scheduled | open | closed (IST dates).",
+    )
 
     @field_validator("title", mode="before")
     @classmethod
@@ -105,21 +170,6 @@ class HackathonCreateRequest(BaseModel):
     )
     timeline: list[TimelineRound] = Field(default_factory=list)
     prizes: HackathonPrizes
-    working_demo_video_required: bool = Field(
-        True,
-        description=(
-            "When true, students must record or upload a working demo video "
-            "with their submission. When false, text fields alone are enough."
-        ),
-    )
-    auto_ai_evaluation: bool = Field(
-        False,
-        description=(
-            "When true, AI evaluation is queued automatically (Cloud Tasks / "
-            "background) when submissions are assigned to evaluators. When false, "
-            "evaluators start AI evaluation manually via the AI Evaluation button."
-        ),
-    )
 
     @field_validator(
         "name", "description", "guidelines", "evaluator_guidelines", mode="before"
@@ -172,17 +222,6 @@ class HackathonUpdateRequest(BaseModel):
     hackathon_url: Optional[str] = Field(None, max_length=2000)
     timeline: Optional[list[TimelineRound]] = None
     prizes: Optional[HackathonPrizes] = None
-    working_demo_video_required: Optional[bool] = Field(
-        None,
-        description="Toggle whether students must submit a working demo video.",
-    )
-    auto_ai_evaluation: Optional[bool] = Field(
-        None,
-        description=(
-            "Toggle automatic AI evaluation on evaluator assignment. "
-            "When false, evaluators use the manual AI Evaluation button."
-        ),
-    )
 
     @field_validator(
         "name", "description", "guidelines", "evaluator_guidelines", mode="before"
@@ -250,16 +289,21 @@ class HackathonResponse(BaseModel):
     working_demo_video_required: bool = Field(
         True,
         description=(
-            "When true, the student submit wizard must collect a demo video. "
-            "Defaults to true for older hackathons that predate this flag."
+            "Legacy hackathon-level default for rounds that omit this flag. "
+            "Prefer each timeline round's working_demo_video_required."
         ),
     )
     auto_ai_evaluation: bool = Field(
         False,
         description=(
-            "When true, AI evaluation runs automatically after admin assigns "
-            "evaluators. When false, evaluators click AI Evaluation per submission. "
-            "Defaults to false for older hackathons."
+            "Legacy hackathon-level default for rounds that omit this flag. "
+            "Prefer each timeline round's auto_ai_evaluation."
+        ),
+    )
+    github_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "Legacy hackathon-level default for rounds that omit github_ai_evaluation."
         ),
     )
     banner_path: Optional[str] = Field(
@@ -273,3 +317,60 @@ class HackathonResponse(BaseModel):
     created_by: str
     created_at: ISTDateTime
     updated_at: ISTDateTime
+    export_spreadsheet_id: Optional[str] = Field(
+        None,
+        description="Google Spreadsheet id when admin has synced submission export.",
+    )
+    export_spreadsheet_url: Optional[str] = Field(
+        None,
+        description="Browser URL for the linked submission export spreadsheet.",
+    )
+    export_spreadsheet_synced_at: Optional[ISTDateTime] = Field(
+        None,
+        description="Last time submission data was synced to Google Sheets.",
+    )
+
+
+class HackathonCatalogRound(BaseModel):
+    """The published round used for homepage status / Solo vs Team."""
+
+    index: int
+    title: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    round_status: str
+    max_team_size: int
+    team_mode_label: str
+
+
+class HackathonCatalogItem(BaseModel):
+    """
+    Homepage card. Status and Solo/Team come from the featured published round
+    (computed in IST from Firestore, not stored).
+    """
+
+    id: str
+    name: str
+    description: str
+    start_date: str
+    end_date: str
+    banner_url: Optional[str] = None
+    hackathon_url: Optional[str] = None
+    prizes: Optional[HackathonPrizes] = None
+    themes: list[ThemeSummary] = Field(default_factory=list)
+    status: str = Field(
+        ...,
+        description="upcoming | open | closing_soon | closed",
+    )
+    status_label: str = Field(
+        ...,
+        description="Upcoming | Open | Closing soon | Closed",
+    )
+    team_mode: str = Field(..., description="solo | team")
+    team_mode_label: str = Field(..., description="Solo | Team")
+    max_team_size: int
+    days_until_end: Optional[int] = Field(
+        None,
+        description="IST calendar days until featured round end_date when open.",
+    )
+    featured_round: HackathonCatalogRound

@@ -68,10 +68,25 @@ SAMPLE_METRICS = [
         "color": "#D97706",
         "segments": [
             {"key": "authentication", "label": "Authentication", "kind": "boolean", "max_score": 5},
-            {"key": "data_persistence", "label": "Data Persistence", "kind": "boolean", "max_score": 5},
+            {
+                "key": "data_persistence",
+                "label": "Data Persistence",
+                "kind": "boolean",
+                "max_score": 5,
+            },
             {"key": "realtime_data", "label": "Real time data", "kind": "boolean", "max_score": 5},
-            {"key": "ai_features", "label": "AI Features Working", "kind": "boolean", "max_score": 5},
-            {"key": "mobile_responsive", "label": "Mobile Responsive", "kind": "boolean", "max_score": 5},
+            {
+                "key": "ai_features",
+                "label": "AI Features Working",
+                "kind": "boolean",
+                "max_score": 5,
+            },
+            {
+                "key": "mobile_responsive",
+                "label": "Mobile Responsive",
+                "kind": "boolean",
+                "max_score": 5,
+            },
             {"key": "ui_quality", "label": "UI Quality", "kind": "boolean", "max_score": 5},
         ],
     },
@@ -82,7 +97,11 @@ def test_skeleton_marks_manual_pending():
     card = build_scorecard_skeleton(SAMPLE_METRICS)
     assert len(card["metrics"]) == 5
     assert card["complete"] is False
-    assert card["computed_total"] == 0 or card["computed_total"] is None or card["computed_total"] == 0.0
+    assert (
+        card["computed_total"] == 0
+        or card["computed_total"] is None
+        or card["computed_total"] == 0.0
+    )
 
 
 def test_ai_then_manual_computes_100():
@@ -177,9 +196,9 @@ def test_ai_overrides_recompute_totals_and_audit():
         "solution_description",
         "video_explanation",
     }
-    assert next(r for r in audit if r["field_key"] == "problem_statement")[
-        "original_ai_score"
-    ] == 15
+    assert (
+        next(r for r in audit if r["field_key"] == "problem_statement")["original_ai_score"] == 15
+    )
 
 
 def test_ai_overrides_reject_manual_metrics():
@@ -192,3 +211,174 @@ def test_ai_overrides_reject_over_max():
     card = build_scorecard_skeleton(SAMPLE_METRICS)
     with pytest.raises(ValueError, match="between 0 and 15"):
         apply_ai_overrides(card, [{"field_key": "problem_statement", "score": 20}])
+
+
+GRADED_LEVELS = [
+    {"value": "full", "label": "Fully Authentication feature", "score": 5},
+    {"value": "partial", "label": "Partially Authentication Feature", "score": 3},
+    {"value": "mockup", "label": "Only Mockup Authentication", "score": 1},
+    {"value": "none", "label": "No Authentication", "score": 0},
+]
+
+
+def _mvp_graded_metrics() -> list[dict]:
+    keys = [
+        ("authentication", "Authentication"),
+        ("data_persistence", "Data Persistence"),
+        ("realtime_data", "Real time data"),
+        ("ai_features", "AI Features Working"),
+        ("mobile_responsive", "Mobile Responsive"),
+        ("ui_quality", "UI Quality"),
+    ]
+    return [
+        {
+            "field_key": "mvp_link",
+            "field_label": "Project Deployed Link",
+            "scoring_mode": "manual",
+            "max_score": 30,
+            "weight": 30,
+            "segments": [
+                {
+                    "key": key,
+                    "label": label,
+                    "kind": "enum",
+                    "max_score": 5,
+                    "options": GRADED_LEVELS,
+                }
+                for key, label in keys
+            ],
+        }
+    ]
+
+
+def test_graded_enum_awards_option_score_and_sums_to_metric():
+    metrics = _mvp_graded_metrics()
+    card = build_scorecard_skeleton(metrics)
+    auth = card["metrics"][0]["segments"][0]
+    assert auth["kind"] == "enum"
+    assert auth["options"][0]["value"] == "full"
+    assert auth["options"][0]["score"] == 5
+
+    card = apply_manual_scores(
+        card,
+        [
+            {
+                "field_key": "mvp_link",
+                "segments": [
+                    {"key": "authentication", "value": "full"},
+                    {"key": "data_persistence", "value": "partial"},
+                    {"key": "realtime_data", "value": "mockup"},
+                    {"key": "ai_features", "value": "none"},
+                    {"key": "mobile_responsive", "value": "full"},
+                    {"key": "ui_quality", "value": "partial"},
+                ],
+            }
+        ],
+        metric_defs=metrics,
+    )
+    mvp = card["metrics"][0]
+    # 5 + 3 + 1 + 0 + 5 + 3 = 17
+    assert mvp["score"] == 17
+    by_key = {s["key"]: s for s in mvp["segments"]}
+    assert by_key["authentication"]["score"] == 5
+    assert by_key["data_persistence"]["score"] == 3
+    assert by_key["ai_features"]["score"] == 0
+    assert by_key["authentication"]["value"] == "full"
+
+
+def test_graded_enum_rejects_unknown_option():
+    metrics = _mvp_graded_metrics()
+    card = build_scorecard_skeleton(metrics)
+    with pytest.raises(ValueError, match="Invalid value"):
+        apply_manual_scores(
+            card,
+            [
+                {
+                    "field_key": "mvp_link",
+                    "segments": [{"key": "authentication", "value": "yes"}],
+                }
+            ],
+            metric_defs=metrics,
+        )
+
+
+def test_metric_warns_when_segment_marks_do_not_sum_to_max():
+    from app.models.metric_scoring_model import FieldScoringMetric
+
+    metric = FieldScoringMetric(
+        field_key="mvp_link",
+        scoring_mode="manual",
+        max_score=30,
+        weight=30,
+        segments=[
+            {
+                "key": "authentication",
+                "label": "Authentication",
+                "kind": "enum",
+                "options": GRADED_LEVELS,
+            }
+        ],
+    )
+    assert metric.max_score == 30
+    assert metric.segments[0].max_score == 5
+    assert metric.warnings
+    assert "add up to 5" in metric.warnings[0]
+    assert "30" in metric.warnings[0]
+
+
+def test_metric_no_warning_when_boolean_segments_sum_to_max():
+    from app.models.metric_scoring_model import FieldScoringMetric
+
+    metric = FieldScoringMetric(
+        field_key="mvp_link",
+        scoring_mode="manual",
+        max_score=30,
+        weight=30,
+        segments=[
+            {"key": f"s{i}", "label": f"S{i}", "kind": "boolean", "max_score": 5} for i in range(6)
+        ],
+    )
+    assert metric.warnings == []
+
+
+def test_legacy_string_enum_options_still_accepted():
+    from app.models.metric_scoring_model import MetricSegment
+
+    segment = MetricSegment(
+        key="visibility",
+        label="Public or Private",
+        kind="enum",
+        options=["public", "private"],
+        max_score=0,
+    )
+    assert segment.options[0].value == "public"
+    assert segment.options[0].score == 0
+    assert segment.max_score == 0
+
+
+def test_enum_option_score_cannot_exceed_segment_max():
+    from pydantic import ValidationError
+
+    from app.models.metric_scoring_model import MetricSegment
+
+    with pytest.raises(ValidationError, match="must be"):
+        MetricSegment(
+            key="authentication",
+            label="Authentication",
+            kind="enum",
+            max_score=5,
+            options=[
+                {"value": "full", "label": "Fully Authentication feature", "score": 8},
+                {"value": "none", "label": "No Authentication", "score": 0},
+            ],
+        )
+
+    ok = MetricSegment(
+        key="authentication",
+        label="Authentication",
+        kind="enum",
+        max_score=5,
+        options=GRADED_LEVELS,
+    )
+    assert ok.max_score == 5
+    assert max(option.score for option in ok.options) == 5

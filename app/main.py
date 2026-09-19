@@ -19,6 +19,7 @@ from app.routes import (
     metric_scoring,
     settings,
     submissions,
+    teams,
     theme,
 )
 from app.utils.async_io import run_sync
@@ -123,6 +124,7 @@ app.include_router(admin.router)
 app.include_router(settings.router)
 app.include_router(submissions.router)
 app.include_router(hackathon.router)
+app.include_router(teams.router)
 app.include_router(theme.router)
 app.include_router(evaluation_requirement.router)
 app.include_router(evaluation_prompt.router)

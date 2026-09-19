@@ -6,6 +6,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.models.metric_scoring_model import (
+    enum_options_are_scored,
+    normalize_segment_options,
+)
+
 
 def build_scorecard_skeleton(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     """Empty scorecard from metric definitions (all scores pending)."""
@@ -13,18 +18,21 @@ def build_scorecard_skeleton(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     for metric in metrics:
         segments = None
         if metric.get("segments"):
-            segments = [
-                {
-                    "key": seg["key"],
-                    "label": seg.get("label") or seg["key"],
-                    "kind": seg.get("kind") or "score",
-                    "score": None,
-                    "max_score": float(seg.get("max_score") or 0),
-                    "value": None,
-                    "description": seg.get("description"),
-                }
-                for seg in metric["segments"]
-            ]
+            segments = []
+            for seg in metric["segments"]:
+                options = normalize_segment_options(seg.get("options"))
+                segments.append(
+                    {
+                        "key": seg["key"],
+                        "label": seg.get("label") or seg["key"],
+                        "kind": seg.get("kind") or "score",
+                        "score": None,
+                        "max_score": float(seg.get("max_score") or 0),
+                        "value": None,
+                        "description": seg.get("description"),
+                        "options": options or None,
+                    }
+                )
         items.append(
             {
                 "field_key": metric["field_key"],
@@ -102,18 +110,14 @@ def apply_ai_overrides(
             raise ValueError("ai_overrides entries require field_key")
         key = canonicalize_metric_field_key(raw_key, scorecard_keys)
         if key not in by_key:
-            raise ValueError(
-                f"field_key '{raw_key}' is not on this hackathon scorecard"
-            )
+            raise ValueError(f"field_key '{raw_key}' is not on this hackathon scorecard")
         if key in seen:
             raise ValueError(f"Duplicate ai_override for '{key}'")
         seen.add(key)
 
         item = by_key[key]
         if item.get("scoring_mode") == "manual":
-            raise ValueError(
-                f"Cannot override manual metric '{key}' via ai_overrides"
-            )
+            raise ValueError(f"Cannot override manual metric '{key}' via ai_overrides")
 
         max_score = float(item.get("max_score") or 10)
         try:
@@ -121,9 +125,7 @@ def apply_ai_overrides(
         except (KeyError, TypeError, ValueError) as e:
             raise ValueError(f"ai_override '{key}' requires a numeric score") from e
         if score < 0 or score > max_score:
-            raise ValueError(
-                f"ai_override '{key}' score must be between 0 and {max_score}"
-            )
+            raise ValueError(f"ai_override '{key}' score must be between 0 and {max_score}")
 
         original = item.get("score")
         try:
@@ -156,7 +158,9 @@ def apply_manual_scores(
 
     Each manual metric: {field_key, score?, segments?: [{key, value|score}]}
     Boolean segments: value true → max_score, false → 0.
-    Enum segments: store value; score may be provided separately on parent.
+    Enum segments: store selected option value. Graded enums award that
+    option's ``score``. Unscored string enums (GitHub visibility) behave as
+    before.
     """
     defs_by_key = {m["field_key"]: m for m in (metric_defs or [])}
     by_key = {item["field_key"]: item for item in (scorecard.get("metrics") or [])}
@@ -170,9 +174,7 @@ def apply_manual_scores(
             raise ValueError(f"Metric '{key}' is not a manual metric")
 
         metric_def = defs_by_key.get(key) or {}
-        seg_defs = {
-            s["key"]: s for s in (metric_def.get("segments") or item.get("segments") or [])
-        }
+        seg_defs = {s["key"]: s for s in (metric_def.get("segments") or item.get("segments") or [])}
         incoming_segments = payload.get("segments") or []
 
         if incoming_segments:
@@ -185,6 +187,7 @@ def apply_manual_scores(
                     "max_score": float(s.get("max_score") or 0),
                     "value": None,
                     "description": s.get("description"),
+                    "options": normalize_segment_options(s.get("options")) or None,
                 }
                 for s in (metric_def.get("segments") or [])
             ]
@@ -201,26 +204,43 @@ def apply_manual_scores(
                     seg["score"] = float(seg.get("max_score") or 0) if present else 0.0
                 elif kind == "enum":
                     value = seg_in.get("value")
-                    options = (seg_defs.get(seg_key) or {}).get("options") or []
-                    if options and value not in options:
+                    options = normalize_segment_options(
+                        (seg_defs.get(seg_key) or {}).get("options") or seg.get("options")
+                    )
+                    allowed = [option["value"] for option in options]
+                    if allowed and value not in allowed:
+                        labels = ", ".join(allowed)
                         raise ValueError(
                             f"Invalid value '{value}' for segment '{seg_key}'. "
-                            f"Expected one of: {', '.join(options)}"
+                            f"Expected one of: {labels}"
                         )
                     seg["value"] = value
-                    if seg_in.get("score") is not None:
+                    seg["options"] = options or seg.get("options")
+                    if enum_options_are_scored(options):
+                        chosen = next(
+                            (option for option in options if option["value"] == value),
+                            None,
+                        )
+                        awarded = float((chosen or {}).get("score") or 0)
+                        cap = float(seg.get("max_score") or 0)
+                        if cap and awarded > cap:
+                            awarded = cap
+                        seg["score"] = awarded
+                        if cap:
+                            seg["max_score"] = cap
+                        else:
+                            seg["max_score"] = max(
+                                float(option.get("score") or 0) for option in options
+                            )
+                    elif seg_in.get("score") is not None:
                         seg["score"] = float(seg_in["score"])
                 else:
                     if seg_in.get("score") is None:
-                        raise ValueError(
-                            f"Segment '{seg_key}' requires a numeric score"
-                        )
+                        raise ValueError(f"Segment '{seg_key}' requires a numeric score")
                     score = float(seg_in["score"])
                     max_s = float(seg.get("max_score") or 0)
                     if score < 0 or (max_s and score > max_s):
-                        raise ValueError(
-                            f"Segment '{seg_key}' score must be between 0 and {max_s}"
-                        )
+                        raise ValueError(f"Segment '{seg_key}' score must be between 0 and {max_s}")
                     seg["score"] = score
                     seg["value"] = score
             item["segments"] = [by_seg[s["key"]] for s in base_segments if s["key"] in by_seg]
@@ -228,11 +248,17 @@ def apply_manual_scores(
             if payload.get("score") is not None:
                 item["score"] = float(payload["score"])
             else:
-                numeric = [
-                    float(s["score"])
-                    for s in item["segments"]
-                    if s.get("score") is not None and s.get("kind") != "enum"
-                ]
+                numeric = []
+                for s in item["segments"]:
+                    if s.get("score") is None:
+                        continue
+                    if s.get("kind") == "enum":
+                        options = normalize_segment_options(
+                            (seg_defs.get(s["key"]) or {}).get("options") or s.get("options")
+                        )
+                        if not enum_options_are_scored(options):
+                            continue
+                    numeric.append(float(s["score"]))
                 if numeric:
                     item["score"] = sum(numeric)
                 else:
@@ -255,9 +281,7 @@ def apply_manual_scores(
         elif payload.get("score") is not None:
             item["score"] = float(payload["score"])
         else:
-            raise ValueError(
-                f"Manual metric '{key}' requires score and/or segments"
-            )
+            raise ValueError(f"Manual metric '{key}' requires score and/or segments")
 
         max_score = float(item.get("max_score") or 10)
         if item["score"] is not None:

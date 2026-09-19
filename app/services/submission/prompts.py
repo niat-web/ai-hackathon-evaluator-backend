@@ -132,6 +132,31 @@ Return ONLY valid JSON:
 """
 
 
+GITHUB_EVAL_CONTEXT_PROMPT = """You are a hackathon technical evaluator preparing input for an
+automated GitHub repository analyzer.
+
+Read the student's problem statement and solution description, then produce:
+1. ``provided_context`` — one plain-text paragraph (150–400 words) describing what
+   the project is, what it should do, and what the analyzer should verify in the repo.
+2. ``rubrics`` — 3–6 short must-have checks as strings (e.g. "Uses an LLM",
+   "Has full-stack demo", "Matches stated problem").
+
+Return ONLY valid JSON:
+{{
+  "provided_context": "<paragraph>",
+  "rubrics": ["<check 1>", "<check 2>"]
+}}
+
+--- PROBLEM STATEMENT ---
+{problem_statement}
+--- END PROBLEM STATEMENT ---
+
+--- SOLUTION DESCRIPTION ---
+{solution_description}
+--- END SOLUTION DESCRIPTION ---
+"""
+
+
 DEFAULT_PROMPT_META = {
     "checklist": {
         "name": "Product & Feature Validation Checklist",
@@ -166,6 +191,21 @@ SCORING_PROMPT_PLACEHOLDERS: list[dict[str, str]] = [
         "label": "Solution Description",
         "description": "Student's submitted solution description text.",
     },
+    {
+        "token": "{theme}",
+        "aliases": "{Theme}",
+        "label": "Theme",
+        "description": (
+            "Description of the theme the student selected. Use this on Problem "
+            "Statement and Solution Description prompts to score theme relevance."
+        ),
+    },
+    {
+        "token": "{theme_name}",
+        "aliases": "{Theme Name}",
+        "label": "Theme name",
+        "description": "Display name of the student's selected theme.",
+    },
 ]
 
 _PROBLEM_PLACEHOLDER_TOKENS = frozenset(
@@ -190,7 +230,37 @@ _PLACEHOLDER_VALUE_KEYS: dict[str, tuple[str, ...]] = {
         "SOLUTION_DESCRIPTION",
         "solution",
     ),
+    "theme": (
+        "theme",
+        "Theme",
+        "THEME",
+    ),
+    "theme_name": (
+        "theme_name",
+        "Theme Name",
+        "THEME_NAME",
+    ),
+    "theme_description": (
+        "theme_description",
+        "Theme Description",
+        "THEME_DESCRIPTION",
+    ),
 }
+
+
+_THEME_PLACEHOLDER_TOKENS = frozenset(
+    {
+        "{theme}",
+        "{Theme}",
+        "{THEME}",
+        "{theme_description}",
+        "{Theme Description}",
+        "{THEME_DESCRIPTION}",
+        "{theme_name}",
+        "{Theme Name}",
+        "{THEME_NAME}",
+    }
+)
 
 
 def scoring_prompt_has_problem_context(template: str) -> bool:
@@ -199,11 +269,31 @@ def scoring_prompt_has_problem_context(template: str) -> bool:
     return any(token in text for token in _PROBLEM_PLACEHOLDER_TOKENS)
 
 
+def scoring_prompt_has_theme_context(template: str) -> bool:
+    """True if the admin prompt already references the student's selected theme."""
+    text = template or ""
+    return any(token in text for token in _THEME_PLACEHOLDER_TOKENS)
+
+
+def scoring_prompt_theme_preamble(values: dict[str, str]) -> str:
+    """Block prepended to PS/SD prompts that do not already mention the theme."""
+    name = (values.get("theme_name") or "").strip()
+    description = (values.get("theme_description") or values.get("theme") or "").strip()
+    if not name and not description:
+        return ""
+    if name and description and description != name:
+        body = f"{name}\n\n{description}"
+    else:
+        body = description or name
+    return f"--- SELECTED THEME ---\n{body}\n--- END SELECTED THEME ---\n\n"
+
+
 def interpolate_scoring_prompt(template: str, values: dict[str, str]) -> str:
     """
-    Replace ``{problem_statement}`` / ``{Problem Statement}`` (and solution
-    equivalents) with the student's submitted text. Unknown ``{tokens}`` are left
-    unchanged. Does not use ``str.format`` so JSON braces in prompts are safe.
+    Replace ``{problem_statement}`` / ``{Problem Statement}``, solution, and
+    ``{theme}`` / ``{Theme}`` tokens with submission values. Unknown ``{tokens}``
+    are left unchanged. Does not use ``str.format`` so JSON braces in prompts
+    are safe.
     """
     result = template or ""
     for canonical, aliases in _PLACEHOLDER_VALUE_KEYS.items():

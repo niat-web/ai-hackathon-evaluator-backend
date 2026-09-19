@@ -114,10 +114,12 @@ def test_create_submission_from_upload_rejects_oversize_blob(service: Submission
         "id": "hack-1",
         "name": "H",
         "theme_ids": ["theme-1"],
+        "timeline": [{"title": "Round 1"}],
     }
     service.theme_service.get_theme.return_value = {"id": "theme-1", "name": "T"}
-    service._resolve_student_team_name = MagicMock(return_value="team peek")
+    service._resolve_submission_team = MagicMock(return_value=("team peek", None))
     service._validate_configuration = MagicMock()
+    service.firebase.query_collection.return_value = []
 
     blob = MagicMock()
     blob.exists.return_value = True
@@ -148,10 +150,12 @@ def test_create_submission_rejects_oversize_bytes(service: SubmissionService):
         "id": "hack-1",
         "name": "H",
         "theme_ids": ["theme-1"],
+        "timeline": [{"title": "Round 1"}],
     }
     service.theme_service.get_theme.return_value = {"id": "theme-1", "name": "T"}
-    service._resolve_student_team_name = MagicMock(return_value="team peek")
+    service._resolve_submission_team = MagicMock(return_value=("team peek", None))
     service._validate_configuration = MagicMock()
+    service.firebase.query_collection.return_value = []
 
     student = MagicMock(user_id="student-1")
     huge = b"\x1a\x45\xdf\xa3" + b"\x00" * (MAX_MULTIPART_VIDEO_BYTES)

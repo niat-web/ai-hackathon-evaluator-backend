@@ -7,15 +7,31 @@ import os
 import uuid
 from typing import Any
 
-from app.utils.time import now_ist_iso
+from app.utils.time import now_ist, now_ist_iso
 
 from google.cloud import storage
 
+from app.exceptions import ConflictError, NotFoundError
 from app.models.hackathon_model import HackathonCreateRequest, HackathonUpdateRequest
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
 from app.services.theme_service import ThemeService
 from app.utils.gcs_video import build_storage_client, generate_signed_url
+from app.utils.hackathon_round import (
+    CATALOG_STATUS_LABELS,
+    TEAM_MODE_LABELS,
+    catalog_sort_key,
+    catalog_status_for_round,
+    catalog_team_mode,
+    enrich_timeline_round,
+    hackathon_default_auto_ai,
+    hackathon_default_github_ai,
+    hackathon_default_video_required,
+    parse_iso_date,
+    pick_featured_published_round,
+    round_is_published,
+    validate_round_publishable,
+)
 from app.utils.image_upload import resolve_image_content_type
 
 
@@ -72,10 +88,11 @@ class HackathonService:
             "evaluator_guidelines": request.evaluator_guidelines.strip(),
             "theme_ids": theme_ids,
             "hackathon_url": request.hackathon_url,
-            "timeline": [round_.model_dump() for round_ in request.timeline],
+            "timeline": [
+                self._normalize_round_for_storage(round_.model_dump(), published=False)
+                for round_ in request.timeline
+            ],
             "prizes": request.prizes.model_dump(),
-            "working_demo_video_required": bool(request.working_demo_video_required),
-            "auto_ai_evaluation": bool(request.auto_ai_evaluation),
             "banner_path": banner_path,
             "created_by": created_by,
             "created_at": now,
@@ -90,6 +107,103 @@ class HackathonService:
         hackathons = self.firebase.get_collection(self.collection)
         hackathons.sort(key=lambda h: h.get("created_at", ""), reverse=True)
         return hackathons
+
+    def list_hackathon_catalog(
+        self, *, include_closed: bool = True
+    ) -> list[dict[str, Any]]:
+        """
+        Homepage cards: hackathons with at least one published round.
+
+        Status (open / closing soon / upcoming / closed) and Solo vs Team are
+        computed in IST from the featured published round.
+        """
+        now = now_ist()
+        items: list[dict[str, Any]] = []
+        for hackathon in self.list_hackathons():
+            card = self._catalog_item_for_hackathon(hackathon, now=now)
+            if not card:
+                continue
+            if not include_closed and card["status"] == "closed":
+                continue
+            items.append(card)
+        items.sort(key=catalog_sort_key)
+        return items
+
+    def _catalog_item_for_hackathon(
+        self, hackathon: dict[str, Any], *, now
+    ) -> dict[str, Any] | None:
+        data = dict(hackathon)
+        timeline = self._enrich_timeline_rounds(data, data.get("timeline") or [])
+        featured = pick_featured_published_round(timeline)
+        if featured is None:
+            return None
+        index, round_ = featured
+        status = catalog_status_for_round(round_, now=now)
+        team_mode, team_mode_label = catalog_team_mode(round_.get("max_team_size", 1))
+        max_size = int(round_.get("max_team_size") or 1)
+        end = parse_iso_date(round_.get("end_date"))
+        days_until_end = None
+        if end is not None and status in ("open", "closing_soon"):
+            days_until_end = (end - now.date()).days
+
+        banner_url = None
+        banner_path = data.get("banner_path")
+        if banner_path:
+            try:
+                banner_url = generate_signed_url(
+                    self._get_storage_client(),
+                    banner_path,
+                )
+            except Exception:
+                logger.warning(
+                    "Catalog banner URL failed for hackathon %s", data.get("id")
+                )
+                banner_url = None
+
+        theme_ids = data.get("theme_ids") or []
+        themes = self.theme_service.get_themes_by_ids(theme_ids)
+        prizes_raw = data.get("prizes")
+        prizes = None
+        if isinstance(prizes_raw, dict) and all(
+            str(prizes_raw.get(key) or "").strip()
+            for key in ("winner", "first_runner_up", "second_runner_up")
+        ):
+            prizes = prizes_raw
+
+        return {
+            "id": data.get("id"),
+            "name": data.get("name") or "",
+            "description": data.get("description") or "",
+            "start_date": data.get("start_date") or "",
+            "end_date": data.get("end_date") or "",
+            "banner_url": banner_url,
+            "hackathon_url": data.get("hackathon_url"),
+            "prizes": prizes,
+            "themes": [
+                {
+                    "id": theme["id"],
+                    "name": theme["name"],
+                    "description": theme["description"],
+                }
+                for theme in themes
+            ],
+            "status": status,
+            "status_label": CATALOG_STATUS_LABELS[status],
+            "team_mode": team_mode,
+            "team_mode_label": team_mode_label,
+            "max_team_size": max_size,
+            "days_until_end": days_until_end,
+            "featured_round": {
+                "index": index,
+                "title": round_.get("title") or f"Round {index + 1}",
+                "start_date": round_.get("start_date"),
+                "end_date": round_.get("end_date"),
+                "round_status": round_.get("round_status"),
+                "max_team_size": max_size,
+                "team_mode_label": round_.get("team_mode_label")
+                or TEAM_MODE_LABELS.get(max_size, "Solo"),
+            },
+        }
 
     def get_hackathon(self, hackathon_id: str) -> dict[str, Any] | None:
         """Fetch a single hackathon by id."""
@@ -129,15 +243,33 @@ class HackathonService:
             update["hackathon_url"] = request.hackathon_url
         if request.timeline is not None:
             self._validate_round_requirement_links(request.timeline)
-            update["timeline"] = [round_.model_dump() for round_ in request.timeline]
+            existing_timeline = existing.get("timeline") or []
+            merged: list[dict[str, Any]] = []
+            for index, round_ in enumerate(request.timeline):
+                incoming = round_.model_dump()
+                prior = existing_timeline[index] if index < len(existing_timeline) else {}
+                if isinstance(prior, dict) and round_is_published(prior):
+                    incoming["published"] = True
+                    incoming["published_at"] = prior.get("published_at")
+                    incoming["published_by"] = prior.get("published_by")
+                else:
+                    incoming = self._normalize_round_for_storage(incoming, published=False)
+                if isinstance(prior, dict) and prior.get("leaderboard_published"):
+                    incoming["leaderboard_published"] = True
+                    incoming["leaderboard_published_at"] = prior.get(
+                        "leaderboard_published_at"
+                    )
+                    incoming["leaderboard_published_by"] = prior.get(
+                        "leaderboard_published_by"
+                    )
+                else:
+                    incoming["leaderboard_published"] = False
+                    incoming["leaderboard_published_at"] = None
+                    incoming["leaderboard_published_by"] = None
+                merged.append(incoming)
+            update["timeline"] = merged
         if request.prizes is not None:
             update["prizes"] = request.prizes.model_dump()
-        if request.working_demo_video_required is not None:
-            update["working_demo_video_required"] = bool(
-                request.working_demo_video_required
-            )
-        if request.auto_ai_evaluation is not None:
-            update["auto_ai_evaluation"] = bool(request.auto_ai_evaluation)
         if banner is not None:
             update["banner_path"] = self._upload_banner(hackathon_id, banner)
 
@@ -152,6 +284,51 @@ class HackathonService:
             self.firebase.update_document(self.collection, hackathon_id, update)
 
         return self.get_hackathon(hackathon_id)
+
+    def publish_round(
+        self, hackathon_id: str, round_index: int, admin_user_id: str
+    ) -> dict[str, Any]:
+        """Publish a timeline round for student participation (IST date checks)."""
+        existing = self.firebase.get_document(self.collection, hackathon_id)
+        if not existing:
+            raise NotFoundError("Hackathon not found", code="HACKATHON_NOT_FOUND")
+
+        timeline = list(existing.get("timeline") or [])
+        if round_index < 0 or round_index >= len(timeline):
+            raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
+
+        round_ = dict(timeline[round_index])
+        if round_is_published(round_):
+            raise ConflictError("This round is already published", code="ALREADY_PUBLISHED")
+
+        validate_round_publishable(round_, now=now_ist())
+        round_["published"] = True
+        round_["published_at"] = now_ist_iso()
+        round_["published_by"] = admin_user_id
+        timeline[round_index] = round_
+        self.firebase.update_document(
+            self.collection,
+            hackathon_id,
+            {"timeline": timeline, "updated_at": now_ist_iso()},
+        )
+        hackathon = self.get_hackathon(hackathon_id)
+        enriched = self.enrich_hackathon_for_response(hackathon or {})
+        published_round = enriched["timeline"][round_index]
+        return {
+            "hackathon_id": hackathon_id,
+            "round_index": round_index,
+            "round": published_round,
+        }
+
+    def filter_timeline_for_student(self, hackathon: dict[str, Any]) -> dict[str, Any]:
+        """Return hackathon payload with only published timeline rounds."""
+        enriched = self.enrich_hackathon_for_response(hackathon)
+        enriched["timeline"] = [
+            round_
+            for round_ in enriched.get("timeline") or []
+            if round_.get("published")
+        ]
+        return enriched
 
     def delete_hackathon(self, hackathon_id: str) -> bool:
         """Delete a hackathon document. Returns False if it does not exist."""
@@ -168,10 +345,25 @@ class HackathonService:
         enriched.setdefault("hackathon_url", None)
         # Older docs omit evaluator guidelines — expose empty string to clients.
         enriched.setdefault("evaluator_guidelines", "")
-        # Older docs omit this flag — treat as required so existing flows stay safe.
-        enriched.setdefault("working_demo_video_required", True)
-        # Older docs omit auto AI — default off so evaluators keep the manual button.
-        enriched.setdefault("auto_ai_evaluation", False)
+        enriched.setdefault(
+            "working_demo_video_required",
+            hackathon_default_video_required(enriched),
+        )
+        enriched.setdefault(
+            "auto_ai_evaluation",
+            hackathon_default_auto_ai(enriched),
+        )
+        enriched.setdefault(
+            "github_ai_evaluation",
+            hackathon_default_github_ai(enriched),
+        )
+        enriched.setdefault("export_spreadsheet_id", None)
+        enriched.setdefault("export_spreadsheet_url", None)
+        enriched.setdefault("export_spreadsheet_synced_at", None)
+        enriched["timeline"] = self._enrich_timeline_rounds(
+            enriched,
+            enriched.get("timeline") or [],
+        )
 
         banner_path = enriched.get("banner_path")
         if banner_path:
@@ -256,3 +448,36 @@ class HackathonService:
         if self.storage_client is None:
             self.storage_client = build_storage_client(self.project)
         return self.storage_client
+
+    @staticmethod
+    def _normalize_max_team_size(value: Any) -> int:
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            size = 1
+        return max(1, min(4, size))
+
+    @staticmethod
+    def _normalize_round_for_storage(
+        round_: dict[str, Any], *, published: bool
+    ) -> dict[str, Any]:
+        data = dict(round_)
+        data["published"] = published
+        if not published:
+            data["published_at"] = None
+            data["published_by"] = None
+        data.setdefault("leaderboard_published", False)
+        if not data.get("leaderboard_published"):
+            data["leaderboard_published"] = False
+            data["leaderboard_published_at"] = None
+            data["leaderboard_published_by"] = None
+        return data
+
+    def _enrich_timeline_rounds(
+        self, hackathon: dict[str, Any], timeline: list[Any]
+    ) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for round_ in timeline:
+            data = dict(round_) if isinstance(round_, dict) else round_.model_dump()
+            enriched.append(enrich_timeline_round(data, hackathon=hackathon))
+        return enriched

@@ -17,6 +17,7 @@ from google.cloud import storage
 from app.models.settings_model import RESET_CONFIRM_PHRASE
 from app.services.email_service import MAIL_COLLECTION
 from app.services.firebase import FirebaseService
+from app.services.team_service import TEAMS, ENROLLMENTS, JOIN_CODES
 from app.services.verification_service import RATE_LIMITS, SESSIONS
 from app.utils.gcs_video import (
     build_storage_client,
@@ -32,6 +33,7 @@ DEFAULT_PROFILE_PASSWORD = "12345678"
 # Application data wiped on reset. Admin users + app_settings are preserved.
 WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "hackathons",
+    "hackathon_drafts",
     "themes",
     "evaluation_requirements",
     "ai_evaluation_metric_scoring",
@@ -40,6 +42,9 @@ WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "ai_evaluation_prompt",
     "submissions",
     "analysis",
+    TEAMS,
+    ENROLLMENTS,
+    JOIN_CODES,
     # Ephemeral registration / email queue (not preserved on reset).
     SESSIONS,
     RATE_LIMITS,

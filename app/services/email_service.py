@@ -39,6 +39,10 @@ BREVO_SMTP_PORT = 587
 class EmailService(Protocol):
     def send_verification_code(self, to_email: str, code: str) -> None: ...
 
+    def send_notification_email(
+        self, to_email: str, subject: str, body: str
+    ) -> None: ...
+
 
 def resolve_smtp_config() -> dict[str, str | int | bool]:
     """Read SMTP settings from env (shared by SmtpEmailService and tests)."""
@@ -122,6 +126,20 @@ class FirestoreTriggerEmailService:
         )
         logger.info("Queued verification email via Firestore mail collection")
 
+    def send_notification_email(self, to_email: str, subject: str, body: str) -> None:
+        self.firebase.set_document(
+            MAIL_COLLECTION,
+            str(uuid.uuid4()),
+            {
+                "to": [to_email],
+                "message": {
+                    "subject": subject,
+                    "text": body,
+                },
+            },
+        )
+        logger.info("Queued notification email via Firestore mail collection")
+
 
 class SmtpEmailService:
     """Send OTP email directly via SMTP (Brevo recommended)."""
@@ -134,6 +152,10 @@ class SmtpEmailService:
         )
         logger.info("Sent verification email via SMTP to %s", to_email)
 
+    def send_notification_email(self, to_email: str, subject: str, body: str) -> None:
+        send_smtp_message(to_email=to_email, subject=subject, body=body)
+        logger.info("Sent notification email via SMTP to %s", to_email)
+
 
 class ConsoleEmailService:
     """Local dev — prints OTP to the server log (never returned in API responses)."""
@@ -145,17 +167,24 @@ class ConsoleEmailService:
             code,
         )
 
+    def send_notification_email(self, to_email: str, subject: str, body: str) -> None:
+        logger.warning("DEV EMAIL to %s: %s", to_email, subject)
+
 
 class RecordingEmailService:
     """Test double — records recipients, never exposes codes via logs."""
 
     def __init__(self) -> None:
         self.sent_to: list[str] = []
+        self.notifications: list[tuple[str, str]] = []
         self._last_code: str | None = None
 
     def send_verification_code(self, to_email: str, code: str) -> None:
         self.sent_to.append(to_email)
         self._last_code = code
+
+    def send_notification_email(self, to_email: str, subject: str, body: str) -> None:
+        self.notifications.append((to_email, subject))
 
     def pop_last_code(self) -> str | None:
         code = self._last_code

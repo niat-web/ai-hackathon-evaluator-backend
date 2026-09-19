@@ -20,10 +20,14 @@ def _stub_create_mixin() -> CreateMixin:
             self.hackathon_service = MagicMock()
             self.theme_service = MagicMock()
             self.firebase = MagicMock()
+            self.firebase.query_collection.return_value = []
             self._team = "Team Alpha"
 
         def _validate_configuration(self, *, require_bucket: bool = True):
             return None
+
+        def _resolve_submission_team(self, hackathon_id, round_index, student_id):
+            return self._team, None
 
         def _resolve_student_team_name(self, student_id: str) -> str:
             return self._team
@@ -47,7 +51,7 @@ def test_shared_validate_hackathon_and_theme_rejects_unreleased_theme():
 def test_build_new_submission_document_shape_is_stable():
     host = _stub_create_mixin()
     hackathon = {"name": "Hack"}
-    theme = {"name": "AI"}
+    theme = {"name": "AI", "description": "Build with generative AI."}
     doc = host._build_new_submission_document(
         student_id="stu-1",
         hackathon_id="hack-1",
@@ -70,6 +74,7 @@ def test_build_new_submission_document_shape_is_stable():
     assert doc["video_source"] == "recorded"
     assert doc["hackathon_name"] == "Hack"
     assert doc["theme_name"] == "AI"
+    assert doc["theme_description"] == "Build with generative AI."
     assert doc["created_at"] == doc["updated_at"] == "2026-01-01T00:00:00"
 
 
@@ -86,9 +91,7 @@ def test_persist_new_submission_uses_shared_message():
     result = host._persist_new_submission("sub-1", submission)
     assert result["id"] == "sub-1"
     assert result["message"] == CREATE_SUCCESS_MESSAGE
-    host.firebase.set_document.assert_called_once_with(
-        "submissions", "sub-1", submission
-    )
+    host.firebase.set_document.assert_called_once_with("submissions", "sub-1", submission)
 
 
 def test_facade_still_exports_from_submission_service_module():
@@ -100,6 +103,7 @@ def test_create_submission_uses_shared_builders():
     host.hackathon_service.get_hackathon.return_value = {
         "name": "H1",
         "theme_ids": ["t1"],
+        "timeline": [{"title": "Round 1"}],
     }
     host.theme_service.get_theme.return_value = {"name": "Theme"}
     host._upload_bytes = MagicMock()

@@ -20,6 +20,8 @@ from app.services.submission.prompts import (
     VIDEO_SCORE_PROMPT,
     interpolate_scoring_prompt,
     scoring_prompt_has_problem_context,
+    scoring_prompt_has_theme_context,
+    scoring_prompt_theme_preamble,
 )
 
 
@@ -44,9 +46,7 @@ class AnalysisMixin:
         criteria = evaluation_criteria.strip() if evaluation_criteria else None
 
         def _txn(transaction):
-            submission = self.firebase.txn_get(
-                transaction, self.collection, submission_id
-            )
+            submission = self.firebase.txn_get(transaction, self.collection, submission_id)
             if not submission:
                 raise ValueError("Submission not found")
             if submission.get("status") == "processing":
@@ -66,9 +66,7 @@ class AnalysisMixin:
                 "created_at": now,
                 "updated_at": now,
             }
-            self.firebase.txn_set(
-                transaction, self.analysis_collection, analysis_id, analysis_doc
-            )
+            self.firebase.txn_set(transaction, self.analysis_collection, analysis_id, analysis_doc)
 
             submission_update: dict[str, Any] = {
                 "analysis_id": analysis_id,
@@ -93,9 +91,7 @@ class AnalysisMixin:
             if evaluation_criteria is not None:
                 submission_update["evaluation_criteria"] = criteria
 
-            self.firebase.txn_update(
-                transaction, self.collection, submission_id, submission_update
-            )
+            self.firebase.txn_update(transaction, self.collection, submission_id, submission_update)
             return analysis_id
 
         return self.firebase.run_transaction(_txn)
@@ -130,9 +126,7 @@ class AnalysisMixin:
             if hackathon_id:
                 hackathon = self.hackathon_service.get_hackathon(hackathon_id)
 
-            video_required = (
-                demo_video_required(hackathon) if hackathon else bool(video_uri)
-            )
+            video_required = demo_video_required(hackathon) if hackathon else bool(video_uri)
             if video_required and not video_uri:
                 raise ValueError("Submission is missing video_path (GCS URI)")
 
@@ -144,9 +138,7 @@ class AnalysisMixin:
             extra_criteria = evaluation_criteria or submission.get("evaluation_criteria")
             if extra_criteria and extra_criteria.strip():
                 checklist = (
-                    checklist
-                    + "\n\n--- ADDITIONAL EVALUATION FOCUS ---\n"
-                    + extra_criteria.strip()
+                    checklist + "\n\n--- ADDITIONAL EVALUATION FOCUS ---\n" + extra_criteria.strip()
                 )
 
             _scoring_config, metric_defs = self._load_scoring_config(hackathon)
@@ -165,9 +157,7 @@ class AnalysisMixin:
                 )
                 video_metric = self._find_video_metric(metric_defs)
                 if video_metric:
-                    video_score = self._score_video_metric(
-                        client, video_metric, video_report
-                    )
+                    video_score = self._score_video_metric(client, video_metric, video_report)
                     field_scores.append(video_score)
             else:
                 logger.info(
@@ -179,8 +169,7 @@ class AnalysisMixin:
                     field_scores.append(
                         {
                             "field_key": video_metric["field_key"],
-                            "field_label": video_metric.get("field_label")
-                            or "Video Explanation",
+                            "field_label": video_metric.get("field_label") or "Video Explanation",
                             "score": 0,
                             "max_score": float(video_metric.get("max_score") or 20),
                             "weight": video_metric.get("weight"),
@@ -306,9 +295,7 @@ class AnalysisMixin:
 
         if publish:
             if submission.get("status") != "completed":
-                raise ValueError(
-                    "Report can only be published after analysis has completed"
-                )
+                raise ValueError("Report can only be published after analysis has completed")
             analysis_id = submission.get("analysis_id")
             if not analysis_id:
                 raise ValueError("No analysis linked to this submission")
@@ -437,9 +424,7 @@ class AnalysisMixin:
         solution: str,
     ) -> list[dict[str, Any]]:
         """Score AI text metrics (skips manual + video — video scored separately)."""
-        context = self._build_scoring_prompt_context(
-            submission, problem=problem, solution=solution
-        )
+        context = self._build_scoring_prompt_context(submission, problem=problem, solution=solution)
         results: list[dict[str, Any]] = []
         for metric in metrics:
             if (metric.get("scoring_mode") or "ai") != "ai":
@@ -463,23 +448,38 @@ class AnalysisMixin:
                 )
                 continue
 
-            scored = self._score_single_field(
-                client, metric, answer, context=context
-            )
+            scored = self._score_single_field(client, metric, answer, context=context)
             results.append(scored)
         return results
 
-    @staticmethod
+    def _resolve_theme_for_scoring(self, submission: dict[str, Any]) -> tuple[str, str]:
+        """Theme name + description from the submission snapshot, else live theme."""
+        name = (submission.get("theme_name") or "").strip()
+        description = (submission.get("theme_description") or "").strip()
+        theme_id = (submission.get("theme_id") or "").strip()
+        if (not name or not description) and theme_id:
+            theme = self.theme_service.get_theme(theme_id)
+            if isinstance(theme, dict):
+                name = name or (theme.get("name") or "").strip()
+                description = description or (theme.get("description") or "").strip()
+        return name, description
+
     def _build_scoring_prompt_context(
+        self,
         submission: dict[str, Any],
         *,
         problem: str,
         solution: str,
     ) -> dict[str, str]:
-        """Values for ``{problem_statement}`` / ``{solution_description}`` etc."""
+        """Values for ``{problem_statement}`` / ``{solution_description}`` / ``{theme}``."""
+        theme_name, theme_description = self._resolve_theme_for_scoring(submission)
+        theme_blob = theme_description or theme_name
         context: dict[str, str] = {
             "problem_statement": (problem or "").strip(),
             "solution_description": (solution or "").strip(),
+            "theme": theme_blob,
+            "theme_name": theme_name,
+            "theme_description": theme_description or theme_blob,
         }
         answers = submission.get("field_answers") or {}
         if isinstance(answers, dict):
@@ -506,9 +506,7 @@ class AnalysisMixin:
         field_key = metric.get("field_key") or "video_explanation"
         field_label = metric.get("field_label") or "Video Explanation"
         max_score = float(metric.get("max_score") or 20)
-        analyze_video_prompt = self.evaluation_prompt_service.get_template(
-            "analyze_video"
-        )
+        analyze_video_prompt = self.evaluation_prompt_service.get_template("analyze_video")
         prompt = VIDEO_SCORE_PROMPT.format(
             max_score=max_score,
             analyze_video_prompt=analyze_video_prompt.strip()[:20000],
@@ -555,9 +553,10 @@ class AnalysisMixin:
 
         values = context or {}
         scoring_prompt = interpolate_scoring_prompt(raw_scoring_prompt, values)
+        field_key_lower = field_key.lower()
         # Solution metrics without an explicit problem placeholder still get
         # the student's problem statement so the model can judge fit.
-        if field_key.lower() in ("solution_description", "solution"):
+        if field_key_lower in ("solution_description", "solution"):
             if not scoring_prompt_has_problem_context(raw_scoring_prompt):
                 problem_text = (values.get("problem_statement") or "").strip()
                 if problem_text:
@@ -567,6 +566,17 @@ class AnalysisMixin:
                         "--- END PROBLEM STATEMENT ---\n\n"
                         f"{scoring_prompt}"
                     )
+        # Problem Statement and Solution Description always receive the
+        # selected theme unless the admin already inserted {theme}.
+        if field_key_lower in (
+            "problem_statement",
+            "problem",
+            "solution_description",
+            "solution",
+        ) and not scoring_prompt_has_theme_context(raw_scoring_prompt):
+            preamble = scoring_prompt_theme_preamble(values)
+            if preamble:
+                scoring_prompt = preamble + scoring_prompt
 
         prompt = FIELD_SCORE_PROMPT.format(
             field_label=field_label,

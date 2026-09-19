@@ -7,7 +7,7 @@ Student submission routes.
     GET    /submissions/accepted-video-types -> allowed MIME/ext for Record + Upload UI
     GET    /submissions                 -> student lists their own submissions
     GET    /submissions/admin/hackathons              -> admin: hackathons + submission counts
-    GET    /submissions/admin/hackathons/{hackathon_id} -> admin: submissions for one hackathon
+    POST   /submissions/admin/hackathons/{hackathon_id}/export/google-sheet -> admin: sync Google Sheet
     POST   /submissions/admin/hackathons/{hackathon_id}/assign-equally
            -> admin: randomly divide selected submissions among active evaluators
     GET    /submissions/admin/all       -> admin lists all submissions
@@ -17,9 +17,11 @@ Student submission routes.
            -> evaluator: assigned submissions for one hackathon
     GET    /submissions/assigned-to-me  -> evaluator: flat list of assigned submissions
     GET    /submissions/{id}            -> get submission (report hidden until published)
+    GET    /submissions/{id}/team       -> team roster (name, email, user_id, leader)
     GET    /submissions/{id}/video      -> stream/download the submission video
     GET    /submissions/{id}/analysis   -> analysis (students only if published)
     GET    /submissions/{id}/report     -> report (students only if published)
+    POST   /submissions/{id}/evaluate-github-ai -> GitHub AI evaluation (evaluator/admin)
     POST   /submissions/{id}/evaluate   -> admin or assigned evaluator starts AI analysis
     POST   /submissions/{id}/submit-for-review -> evaluator submits evaluation to admin
     POST   /submissions/{id}/approve-evaluation -> admin approves → final score to student
@@ -43,6 +45,7 @@ from fastapi import (
 )
 
 from app.exceptions import AppError, http_exception_from_value_error
+from app.models.export_model import GoogleSheetExportRequest, GoogleSheetExportResponse
 from app.middleware.auth_middleware import (
     get_active_user,
     get_admin_user,
@@ -64,14 +67,22 @@ from app.models.submission_model import (
     PublishReportRequest,
     RequestChangesRequest,
     SubmissionResponse,
+    SubmissionTeamResponse,
     SubmitForReviewRequest,
 )
 from app.models.user_model import CurrentUser
 from app.services.auto_ai_evaluation import queue_auto_ai_evaluations
 from app.services.evaluation_job_service import EvaluationJobService
-from app.dependencies import get_evaluation_job_service, get_submission_service
+from app.dependencies import (
+    get_evaluation_job_service,
+    get_google_sheets_export_service,
+    get_submission_service,
+)
+from app.services.google_sheets_export_service import GoogleSheetsExportService
 from app.services.submission_service import SubmissionService
 from app.utils.async_io import run_sync
+from app.utils.hackathon_round import submission_github_ai_enabled
+from app.services.submission.analysis import AnalysisMixin
 from app.utils.video_upload import (
     MAX_MULTIPART_VIDEO_BYTES,
     accepted_video_types_payload,
@@ -94,6 +105,11 @@ async def _to_submission_response(
         service.enrich_submission_for_response,
         submission,
         current_user=current_user,
+    )
+    enriched = await run_sync(
+        service.attach_leaderboard_rank,
+        enriched,
+        current_user,
     )
     return SubmissionResponse(**enriched)
 
@@ -139,6 +155,11 @@ def _http_from_value_error(e: ValueError) -> HTTPException:
 async def create_submission(
     request: Request,
     hackathon_id: str = Form(..., min_length=1, description="Hackathon this submission belongs to"),
+    round_index: int = Form(
+        ...,
+        ge=0,
+        description="0-based timeline round index (e.g. 0 for Round 1, 1 for Round 2).",
+    ),
     theme_id: str = Form(
         ...,
         min_length=1,
@@ -146,20 +167,23 @@ async def create_submission(
     ),
     problem_statement: str = Form(..., min_length=1, max_length=5000),
     solution_description: str = Form(..., min_length=1, max_length=5000),
-    video: UploadFile | None = File(
+    video: UploadFile
+    | None = File(
         None,
         description=(
             "Recorded demo or local video file. Required when the hackathon has "
             "working_demo_video_required=true."
         ),
     ),
-    video_source: str | None = Form(
+    video_source: str
+    | None = Form(
         None,
         description="'recorded' (MediaRecorder) or 'uploaded' (local file).",
     ),
     mvp_link: str | None = Form(None, max_length=2000),
     github_link: str | None = Form(None, max_length=2000),
-    field_answers: str | None = Form(
+    field_answers: str
+    | None = Form(
         None,
         description='Optional JSON object of extra field answers, e.g. {"mvp_link":"https://..."}',
     ),
@@ -200,9 +224,7 @@ async def create_submission(
     try:
         if video is not None and (video.filename or video.content_type):
             try:
-                assert_multipart_request_content_length(
-                    request.headers.get("content-length")
-                )
+                assert_multipart_request_content_length(request.headers.get("content-length"))
                 spool = await spool_upload_file(video, max_bytes=MAX_MULTIPART_VIDEO_BYTES)
             except ValueError as e:
                 raise _http_from_value_error(e) from e
@@ -226,6 +248,7 @@ async def create_submission(
             problem_statement=problem_statement,
             solution_description=solution_description,
             hackathon_id=hackathon_id,
+            round_index=round_index,
             theme_id=theme_id,
             video_source=video_source,
             mvp_link=mvp_link,
@@ -323,6 +346,7 @@ async def create_submission_from_upload(
             problem_statement=request.problem_statement,
             solution_description=request.solution_description,
             hackathon_id=request.hackathon_id,
+            round_index=request.round_index,
             theme_id=request.theme_id,
             video_source=request.video_source,
             mvp_link=request.mvp_link,
@@ -347,7 +371,7 @@ async def list_my_submissions(
     student: CurrentUser = Depends(get_student_user),
     service: SubmissionService = Depends(get_submission_service),
 ) -> list[SubmissionResponse]:
-    """List all submissions for the authenticated student."""
+    """List submissions the authenticated student owns or shares as a teammate."""
     submissions = await run_sync(service.list_student_submissions, student.user_id)
     return await _to_submission_responses(service, submissions, current_user=student)
 
@@ -386,6 +410,40 @@ async def list_submissions_for_hackathon_admin(
 
     submissions = await run_sync(service.list_submissions_for_hackathon, hackathon_id)
     return await _to_submission_responses(service, submissions, current_user=admin)
+
+
+@router.post(
+    "/admin/hackathons/{hackathon_id}/export/google-sheet",
+    response_model=GoogleSheetExportResponse,
+)
+async def sync_hackathon_submissions_google_sheet(
+    hackathon_id: str,
+    request: GoogleSheetExportRequest | None = None,
+    admin: CurrentUser = Depends(get_admin_user),
+    sheets_service: GoogleSheetsExportService = Depends(get_google_sheets_export_service),
+) -> GoogleSheetExportResponse:
+    """
+    Admin: sync all hackathon submissions to a linked Google Spreadsheet.
+
+    On first sync, either auto-creates a sheet (Workspace Shared Drive folders
+    only) or accepts ``spreadsheet_id`` for a sheet you created and shared with
+    the Firebase service account. Later exports refresh the same sheet.
+    """
+    try:
+        result = await run_sync(
+            sheets_service.sync_hackathon_submissions,
+            hackathon_id,
+            admin_email=admin.email,
+            spreadsheet_id=request.spreadsheet_id if request else None,
+        )
+    except AppError:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to sync submissions to Google Sheets",
+        ) from e
+    return GoogleSheetExportResponse(**result)
 
 
 @router.post(
@@ -455,9 +513,7 @@ async def divide_submissions_equally(
         assigned_count=len(assigned),
         evaluator_count=evaluator_count,
         auto_ai_evaluation_queued=queued,
-        submissions=await _to_submission_responses(
-            service, refreshed, current_user=admin
-        ),
+        submissions=await _to_submission_responses(service, refreshed, current_user=admin),
     )
 
 
@@ -652,6 +708,28 @@ async def get_submission(
     return await _to_submission_response(service, submission, current_user=current_user)
 
 
+@router.get("/{submission_id}/team", response_model=SubmissionTeamResponse)
+async def get_submission_team(
+    submission_id: str,
+    current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> SubmissionTeamResponse:
+    """
+    Team roster for a submission (admin table click-through).
+
+    Same access as ``GET /submissions/{id}``: admin, assigned evaluator,
+    submitter, or enrolled teammate. Solo submissions return one member
+    with ``is_solo=true`` instead of 404.
+    """
+    roster = await run_sync(service.get_submission_team, submission_id, current_user)
+    if not roster:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Submission not found",
+        )
+    return SubmissionTeamResponse(**roster)
+
+
 @router.post("/{submission_id}/evaluate", response_model=SubmissionResponse, status_code=202)
 async def evaluate_submission(
     submission_id: str,
@@ -753,6 +831,85 @@ async def evaluate_submission(
     return await _to_submission_response(service, refreshed, current_user=current_user)
 
 
+@router.post(
+    "/{submission_id}/evaluate-github-ai",
+    response_model=SubmissionResponse,
+    status_code=202,
+)
+async def evaluate_github_ai(
+    submission_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> SubmissionResponse:
+    """
+    Run AI GitHub repository analysis for one submission.
+
+    Generates evaluation context with Gemini from the student's problem and
+    solution, then POSTs ``github_url`` + ``context`` to ``GITHUB_AI_EVALUATION_URL``.
+    Updates the GitHub scorecard metric; manual GitHub evaluation remains available.
+    """
+    if current_user.role not in ("admin", "evaluator"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins or assigned evaluators can run GitHub AI evaluation",
+        )
+
+    submission = await run_sync(service.get_submission, submission_id, current_user)
+    if not submission:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Submission not found",
+        )
+
+    try:
+        service.assert_can_evaluate(submission, current_user)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        ) from e
+
+    hackathon = None
+    hackathon_id = (submission.get("hackathon_id") or "").strip()
+    if hackathon_id:
+        hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
+
+    if not submission_github_ai_enabled(hackathon, submission):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub AI evaluation is not enabled for this hackathon round",
+        )
+
+    github_url = AnalysisMixin._resolve_field_answer(submission, "github_link")
+    if not github_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Submission does not include a GitHub link",
+        )
+
+    if submission.get("github_ai_status") == "processing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="GitHub AI evaluation is already in progress",
+        )
+
+    await run_sync(
+        service.mark_github_ai_processing,
+        submission_id,
+        analyzed_by=current_user.user_id,
+    )
+    background_tasks.add_task(service.evaluate_github_ai, submission_id)
+
+    refreshed = await run_sync(service.get_submission, submission_id, current_user)
+    if not refreshed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Submission not found",
+        )
+    return await _to_submission_response(service, refreshed, current_user=current_user)
+
+
 @router.post("/{submission_id}/submit-for-review", response_model=SubmissionResponse)
 async def submit_evaluation_for_review(
     submission_id: str,
@@ -767,14 +924,10 @@ async def submit_evaluation_for_review(
     """
     try:
         manual = (
-            [m.model_dump() for m in request.manual_metrics]
-            if request.manual_metrics
-            else None
+            [m.model_dump() for m in request.manual_metrics] if request.manual_metrics else None
         )
         ai_overrides = (
-            [m.model_dump() for m in request.ai_overrides]
-            if request.ai_overrides
-            else None
+            [m.model_dump() for m in request.ai_overrides] if request.ai_overrides else None
         )
         submission = await run_sync(
             service.submit_for_review,

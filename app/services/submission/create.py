@@ -15,13 +15,19 @@ logger = logging.getLogger(__name__)
 # GCS object compose accepts at most 32 source objects per call.
 _MAX_COMPOSE_PARTS = 32
 
-from app.models.user_model import CurrentUser
 from app.utils.gcs_video import (
     compose_object_from_parts,
     create_resumable_upload_url,
     generate_signed_upload_url,
     parse_gs_uri,
 )
+from app.utils.hackathon_round import (
+    round_auto_ai_evaluation,
+    round_github_ai_evaluation,
+    round_title,
+    round_working_demo_video_required,
+)
+from app.services.submission.uniqueness import assert_no_existing_round_submission
 from app.utils.video_upload import (
     MAX_MULTIPART_VIDEO_BYTES,
     MAX_VIDEO_UPLOAD_BYTES,
@@ -39,9 +45,11 @@ CREATE_SUCCESS_MESSAGE = (
 )
 
 
-def demo_video_required(hackathon: dict[str, Any]) -> bool:
-    """Older hackathons without the flag still require a demo video."""
-    return bool(hackathon.get("working_demo_video_required", True))
+def demo_video_required(hackathon: dict[str, Any], round_index: int = 0) -> bool:
+    """Round-level demo video flag with legacy hackathon-level fallback."""
+    from app.utils.hackathon_round import round_working_demo_video_required
+
+    return round_working_demo_video_required(hackathon, round_index)
 
 
 class CreateMixin:
@@ -54,6 +62,7 @@ class CreateMixin:
         solution_description: str,
         hackathon_id: str,
         theme_id: str,
+        round_index: int = 0,
         video: tuple[str, bytes | BinaryIO, str] | None = None,
         video_source: str | None = None,
         mvp_link: str | None = None,
@@ -61,18 +70,29 @@ class CreateMixin:
         field_answers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create a submission; upload video when provided / required."""
-        hackathon, theme, theme_id = self._validate_hackathon_and_theme(
-            hackathon_id, theme_id
-        )
-        video_required = demo_video_required(hackathon)
+        hackathon, theme, theme_id = self._validate_hackathon_and_theme(hackathon_id, theme_id)
+        video_required = demo_video_required(hackathon, round_index)
         if video_required and video is None:
             raise ValueError(
-                "A working demo video is required for this hackathon. "
+                "A working demo video is required for this round. "
                 "Record or upload a video before submitting."
             )
 
         self._validate_configuration(require_bucket=video is not None or video_required)
-        team_name = self._resolve_student_team_name(student.user_id)
+        self._validate_round_index(hackathon, round_index)
+        assert_no_existing_round_submission(
+            self.firebase,
+            student_id=student.user_id,
+            hackathon_id=hackathon_id,
+            round_index=round_index,
+        )
+        team_name, hackathon_team_id = self._resolve_submission_team(
+            hackathon_id, round_index, student.user_id
+        )
+        round_title = self._round_title(hackathon, round_index)
+        round_video_required = round_working_demo_video_required(hackathon, round_index)
+        round_auto_ai = round_auto_ai_evaluation(hackathon, round_index)
+        round_github_ai = round_github_ai_evaluation(hackathon, round_index)
 
         video_path: str | None = None
         resolved_type: str | None = None
@@ -128,6 +148,12 @@ class CreateMixin:
             theme_id=theme_id,
             theme=theme,
             team_name=team_name,
+            hackathon_team_id=hackathon_team_id,
+            round_index=round_index,
+            round_title=round_title,
+            working_demo_video_required=round_video_required,
+            auto_ai_evaluation=round_auto_ai,
+            github_ai_evaluation=round_github_ai,
             problem_statement=problem_statement,
             solution_description=solution_description,
             video_path=video_path,
@@ -163,9 +189,7 @@ class CreateMixin:
             filename,
         )
         if content_length is not None:
-            assert_video_size(
-                content_length, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed"
-            )
+            assert_video_size(content_length, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed")
 
         submission_id = uuid.uuid4().hex
         object_name = self._video_object_name(student.user_id, submission_id, extension)
@@ -188,11 +212,7 @@ class CreateMixin:
 
         part_bytes = self._parallel_part_bytes()
         threshold = self._parallel_threshold_bytes()
-        if (
-            content_length is not None
-            and content_length >= threshold
-            and part_bytes > 0
-        ):
+        if content_length is not None and content_length >= threshold and part_bytes > 0:
             parts = self._build_parallel_parts(
                 object_name=object_name,
                 content_type=resolved_type,
@@ -271,9 +291,7 @@ class CreateMixin:
         while offset < content_length:
             if index >= _MAX_COMPOSE_PARTS:
                 # Should be unreachable after auto-sizing; fail safely.
-                raise ValueError(
-                    "Unable to plan parallel upload within GCS compose limits"
-                )
+                raise ValueError("Unable to plan parallel upload within GCS compose limits")
             end = min(offset + effective_part_bytes, content_length)
             part_name = f"{object_name}.part{index:03d}"
             upload_url = generate_signed_upload_url(
@@ -328,6 +346,7 @@ class CreateMixin:
         solution_description: str,
         hackathon_id: str,
         theme_id: str,
+        round_index: int = 0,
         video_path: str | None = None,
         content_type: str | None = None,
         source_filename: str | None = None,
@@ -337,19 +356,24 @@ class CreateMixin:
         field_answers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create a submission after optional signed-URL video upload."""
-        hackathon, theme, theme_id = self._validate_hackathon_and_theme(
-            hackathon_id, theme_id
-        )
-        video_required = demo_video_required(hackathon)
+        hackathon, theme, theme_id = self._validate_hackathon_and_theme(hackathon_id, theme_id)
+        video_required = demo_video_required(hackathon, round_index)
         has_video = bool(video_path and str(video_path).strip())
 
         if video_required and not has_video:
             raise ValueError(
-                "A working demo video is required for this hackathon. "
+                "A working demo video is required for this round. "
                 "Upload the video via the signed URL, then finalize."
             )
 
         self._validate_configuration(require_bucket=has_video or video_required)
+        self._validate_round_index(hackathon, round_index)
+        assert_no_existing_round_submission(
+            self.firebase,
+            student_id=student.user_id,
+            hackathon_id=hackathon_id,
+            round_index=round_index,
+        )
 
         resolved_type: str | None = None
         submission_id = uuid.uuid4().hex
@@ -379,13 +403,10 @@ class CreateMixin:
             blob = client.bucket(bucket_name).blob(object_name)
             if not blob.exists():
                 # Parallel path: compose ``*.part000`` … into the final object.
-                part_names = self._list_parallel_part_names(
-                    client, bucket_name, object_name
-                )
+                part_names = self._list_parallel_part_names(client, bucket_name, object_name)
                 if not part_names:
                     raise ValueError(
-                        "Video has not been uploaded yet. "
-                        "Finish the GCS PUT(s), then finalize."
+                        "Video has not been uploaded yet. " "Finish the GCS PUT(s), then finalize."
                     )
                 size = compose_object_from_parts(
                     client,
@@ -408,7 +429,13 @@ class CreateMixin:
             if existing:
                 raise ValueError("A submission already exists for this uploaded video")
 
-        team_name = self._resolve_student_team_name(student.user_id)
+        team_name, hackathon_team_id = self._resolve_submission_team(
+            hackathon_id, round_index, student.user_id
+        )
+        round_title = self._round_title(hackathon, round_index)
+        round_video_required = round_working_demo_video_required(hackathon, round_index)
+        round_auto_ai = round_auto_ai_evaluation(hackathon, round_index)
+        round_github_ai = round_github_ai_evaluation(hackathon, round_index)
         submission = self._build_new_submission_document(
             student_id=student.user_id,
             hackathon_id=hackathon_id.strip(),
@@ -416,6 +443,12 @@ class CreateMixin:
             theme_id=theme_id,
             theme=theme,
             team_name=team_name,
+            hackathon_team_id=hackathon_team_id,
+            round_index=round_index,
+            round_title=round_title,
+            working_demo_video_required=round_video_required,
+            auto_ai_evaluation=round_auto_ai,
+            github_ai_evaluation=round_github_ai,
             problem_statement=problem_statement,
             solution_description=solution_description,
             video_path=video_path.strip() if has_video and video_path else None,
@@ -477,6 +510,16 @@ class CreateMixin:
             raise ValueError("Theme not found")
         return hackathon, theme, theme_id
 
+    @staticmethod
+    def _validate_round_index(hackathon: dict[str, Any], round_index: int) -> None:
+        timeline = hackathon.get("timeline") or []
+        if round_index < 0 or round_index >= len(timeline):
+            raise ValueError("Round not found for this hackathon")
+
+    @staticmethod
+    def _round_title(hackathon: dict[str, Any], round_index: int) -> str:
+        return round_title(hackathon, round_index)
+
     def _build_new_submission_document(
         self,
         *,
@@ -486,6 +529,12 @@ class CreateMixin:
         theme_id: str,
         theme: dict[str, Any],
         team_name: str,
+        hackathon_team_id: str | None = None,
+        round_index: int = 0,
+        round_title: str = "",
+        working_demo_video_required: bool = True,
+        auto_ai_evaluation: bool = False,
+        github_ai_evaluation: bool = False,
         problem_statement: str,
         solution_description: str,
         video_path: str | None,
@@ -513,9 +562,18 @@ class CreateMixin:
             "student_id": student_id,
             "hackathon_id": hackathon_id,
             "hackathon_name": hackathon["name"],
+            "round_index": round_index,
+            "round_title": round_title,
+            "working_demo_video_required": bool(working_demo_video_required),
+            "auto_ai_evaluation": bool(auto_ai_evaluation),
+            "github_ai_evaluation": bool(github_ai_evaluation),
+            "github_ai_status": "none",
+            "github_ai_result": None,
             "team_name": team_name,
+            "hackathon_team_id": hackathon_team_id,
             "theme_id": theme_id,
             "theme_name": theme["name"],
+            "theme_description": (theme.get("description") or "").strip(),
             "problem_statement": problem_statement.strip(),
             "solution_description": solution_description.strip(),
             "mvp_link": (mvp_link or "").strip() or None,

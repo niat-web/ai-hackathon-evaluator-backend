@@ -23,6 +23,13 @@ class SegmentScoreResult(BaseModel):
         description="Raw value for enum/boolean (e.g. 'public', true).",
     )
     description: Optional[str] = None
+    options: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description=(
+            "Enum choices copied from the scorecard config "
+            "({value, label, score}). Evaluator selects one value."
+        ),
+    )
 
 
 class MetricScoreResult(BaseModel):
