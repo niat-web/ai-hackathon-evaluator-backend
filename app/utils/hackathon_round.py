@@ -10,21 +10,21 @@ from app.utils.time import now_ist
 
 
 MAX_ROUND_TEAM_SIZE = 5
+MIN_FLEX_TEAM_SIZE = 2
 DEFAULT_MAX_SUBMISSIONS = 1
 MAX_SUBMISSIONS_PER_ROUND = 3
 
 TEAM_MODE_LABELS = {
     1: "Solo",
-    2: "2 Members",
-    3: "3 Members",
-    4: "4 Members",
-    5: "5 Members",
+    5: "2-5 Members",
 }
 
 RoundStatus = Literal["draft", "scheduled", "open", "closed"]
 CatalogStatus = Literal["upcoming", "open", "closing_soon", "closed"]
 
-TEAM_INCOMPLETE_MESSAGE = "Please complete your team to move to demo video"
+TEAM_INCOMPLETE_MESSAGE = (
+    "Add at least one teammate. A team must have 2 to 5 members before you can submit."
+)
 CLOSING_SOON_DAYS = 3
 CATALOG_STATUS_LABELS = {
     "upcoming": "Upcoming",
@@ -35,11 +35,21 @@ CATALOG_STATUS_LABELS = {
 
 
 def normalize_max_team_size(value: Any) -> int:
+    """Solo stays 1. Any team size is the flexible 2–5 member round."""
     try:
         size = int(value)
     except (TypeError, ValueError):
         size = 1
-    return max(1, min(MAX_ROUND_TEAM_SIZE, size))
+    if size <= 1:
+        return 1
+    return MAX_ROUND_TEAM_SIZE
+
+
+def min_team_size_for(max_team_size: Any) -> int:
+    """Smallest roster that may submit: 1 for solo, 2 for a team round."""
+    if normalize_max_team_size(max_team_size) <= 1:
+        return 1
+    return MIN_FLEX_TEAM_SIZE
 
 
 def normalize_max_submissions(value: Any) -> int:
@@ -228,7 +238,8 @@ def enrich_timeline_round(
     data = dict(round_)
     max_size = normalize_max_team_size(data.get("max_team_size", 1))
     data["max_team_size"] = max_size
-    data["team_mode_label"] = TEAM_MODE_LABELS.get(max_size, f"{max_size} Members")
+    data["min_team_size"] = min_team_size_for(max_size)
+    data["team_mode_label"] = TEAM_MODE_LABELS.get(max_size, "2-5 Members")
     if "working_demo_video_required" not in data:
         data["working_demo_video_required"] = hackathon_default_video_required(hackathon)
     else:

@@ -72,6 +72,7 @@ class HackathonParticipationResponse(BaseModel):
     round_index: int
     round_title: str
     max_team_size: int
+    min_team_size: int = 1
     team_mode_label: str
     working_demo_video_required: bool = True
     auto_ai_evaluation: bool = False

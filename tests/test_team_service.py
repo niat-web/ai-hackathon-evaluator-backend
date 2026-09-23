@@ -126,7 +126,9 @@ def test_team_round_requires_role_choice():
     result = svc.get_participation("hack-1", 0, _student("leader-1"))
     assert result.enrolled is False
     assert result.pending_action == "choose_role"
-    assert result.max_team_size == 2
+    assert result.max_team_size == 5
+    assert result.min_team_size == 2
+    assert result.team_mode_label == "2-5 Members"
     assert result.round_title == "Round 1"
 
 
@@ -141,11 +143,12 @@ def test_leader_creates_team_and_member_joins_for_round():
 
     joined = svc.join_team("hack-1", 0, _student("member-1"), created.join_code.code)
     assert joined.team.member_count == 2
-    assert joined.team.is_full is True
+    assert joined.team.is_full is False
+    assert joined.team.max_members == 5
 
-    with pytest.raises(ConflictError) as exc:
-        svc.join_team("hack-1", 0, _student("member-2"), created.join_code.code)
-    assert exc.value.code == "TEAM_FULL"
+    also = svc.join_team("hack-1", 0, _student("member-2"), created.join_code.code)
+    assert also.team.member_count == 3
+    assert also.team.is_full is False
 
 
 def test_join_code_scoped_to_round():

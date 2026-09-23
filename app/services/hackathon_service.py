@@ -198,7 +198,7 @@ class HackathonService:
                 "round_status": round_.get("round_status"),
                 "max_team_size": max_size,
                 "team_mode_label": round_.get("team_mode_label")
-                or TEAM_MODE_LABELS.get(max_size, "Solo"),
+                or TEAM_MODE_LABELS.get(max_size, "2-5 Members"),
             },
         }
 

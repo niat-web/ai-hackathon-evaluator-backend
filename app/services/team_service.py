@@ -34,8 +34,11 @@ from app.services.submission.uniqueness import (
 )
 from app.services.user_service import UserService
 from app.utils.hackathon_round import (
+    MAX_ROUND_TEAM_SIZE,
+    MIN_FLEX_TEAM_SIZE,
     TEAM_INCOMPLETE_MESSAGE,
     TEAM_MODE_LABELS,
+    min_team_size_for,
     get_timeline_round,
     hackathon_max_submissions,
     normalize_max_team_size,
@@ -107,7 +110,12 @@ class TeamService:
                     )
             if role == "member":
                 pending = None
-            elif role == "leader" and max_size > 1 and team and not team.is_full:
+            elif (
+                role == "leader"
+                and max_size > 1
+                and team
+                and team.member_count < MIN_FLEX_TEAM_SIZE
+            ):
                 pending = "complete_team"
                 block_reason = TEAM_INCOMPLETE_MESSAGE
             elif not round_open:
@@ -157,7 +165,8 @@ class TeamService:
             round_index=round_index,
             round_title=round_title,
             max_team_size=max_size,
-            team_mode_label=TEAM_MODE_LABELS.get(max_size, f"{max_size} Members"),
+            min_team_size=min_team_size_for(max_size),
+            team_mode_label=TEAM_MODE_LABELS.get(max_size, "2-5 Members"),
             working_demo_video_required=round_working_demo_video_required(hackathon, round_index),
             auto_ai_evaluation=round_auto_ai_evaluation(hackathon, round_index),
             github_ai_evaluation=round_github_ai_evaluation(hackathon, round_index),
@@ -495,9 +504,13 @@ class TeamService:
         if not team_doc:
             raise NotFoundError("Team not found", code="TEAM_NOT_FOUND")
         members = list(team_doc.get("members") or [])
-        max_members = int(team_doc.get("max_members") or max_size)
-        if len(members) < max_members:
+        if len(members) < MIN_FLEX_TEAM_SIZE:
             raise ForbiddenError(TEAM_INCOMPLETE_MESSAGE, code="TEAM_INCOMPLETE")
+        if len(members) > MAX_ROUND_TEAM_SIZE:
+            raise ForbiddenError(
+                "A team cannot have more than 5 members.",
+                code="TEAM_TOO_LARGE",
+            )
         assert_within_submission_limit(
             self.firebase,
             student_id=student_id,

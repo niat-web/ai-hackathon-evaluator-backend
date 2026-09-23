@@ -12,7 +12,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.string_utils import strip_optional, strip_required
 from app.models.theme_model import ThemeSummary
-from app.utils.hackathon_round import MAX_ROUND_TEAM_SIZE
+from app.utils.hackathon_round import (
+    MAX_ROUND_TEAM_SIZE,
+    MIN_FLEX_TEAM_SIZE,
+    TEAM_MODE_LABELS,
+    min_team_size_for,
+    normalize_max_team_size,
+)
 
 
 def _normalize_optional_url(value: Optional[str]) -> Optional[str]:
@@ -44,13 +50,19 @@ class TimelineRound(BaseModel):
         ge=1,
         le=MAX_ROUND_TEAM_SIZE,
         description=(
-            "Max participants for this round's team including the leader "
-            "(1 = Solo, 2–5 = team submission)."
+            "1 = Solo. Any value from 2 to 5 is stored as 5 and means a flexible "
+            "team of 2–5 members."
         ),
+    )
+    min_team_size: int = Field(
+        1,
+        ge=1,
+        le=MIN_FLEX_TEAM_SIZE,
+        description="1 for Solo. 2 when the round is a 2–5 member team.",
     )
     team_mode_label: Optional[str] = Field(
         None,
-        description="Read-only label derived from max_team_size (Solo, 2 Members, …).",
+        description='Read-only label: "Solo" or "2-5 Members".',
     )
     working_demo_video_required: bool = Field(
         True,
@@ -125,6 +137,13 @@ class TimelineRound(BaseModel):
         except ValueError as e:
             raise ValueError("Dates must be ISO format (YYYY-MM-DD)") from e
         return value
+
+    @model_validator(mode="after")
+    def apply_team_mode(self) -> "TimelineRound":
+        self.max_team_size = normalize_max_team_size(self.max_team_size)
+        self.min_team_size = min_team_size_for(self.max_team_size)
+        self.team_mode_label = TEAM_MODE_LABELS.get(self.max_team_size, "2-5 Members")
+        return self
 
 
 class HackathonPrizes(BaseModel):

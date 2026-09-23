@@ -320,7 +320,7 @@ Stored on `TimelineRound`:
 | Field | Meaning |
 |-------|---------|
 | `published` | Students can see and enroll |
-| `max_team_size` | 1 = solo, 2–5 = team |
+| `max_team_size` | 1 = Solo. 5 = flexible team of 2–5 members (2, 3, and 4 are stored as 5). Leader may submit once the roster is 2–5. |
 | `working_demo_video_required` | Video required vs form-only |
 | `auto_ai_evaluation` | Queue Gemini on evaluator assign |
 | `github_ai_evaluation` | Show GitHub AI button for evaluators |

@@ -201,6 +201,10 @@ def test_round_accepts_five_member_teams():
     round_ = TimelineRound(title="Round 1", max_team_size=5)
     enriched = enrich_timeline_round(round_.model_dump(), hackathon={})
     assert enriched["max_team_size"] == 5
-    assert enriched["team_mode_label"] == "5 Members"
+    assert enriched["min_team_size"] == 2
+    assert enriched["team_mode_label"] == "2-5 Members"
+    coerced = TimelineRound(title="Round 1", max_team_size=3)
+    assert coerced.max_team_size == 5
+    assert coerced.team_mode_label == "2-5 Members"
     with pytest.raises(ValidationError):
         TimelineRound(title="Round 1", max_team_size=6)
