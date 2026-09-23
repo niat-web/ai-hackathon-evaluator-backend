@@ -31,6 +31,7 @@ from app.services.registration_service import RegistrationService
 from app.services.submission_service import SubmissionService
 from app.services.team_service import TeamService
 from app.services.theme_service import ThemeService
+from app.services.university_service import UniversityService
 from app.services.user_service import UserService
 from app.services.verification_service import VerificationService
 from app.utils.gcs_video import build_storage_client
@@ -43,11 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_gcp_project() -> str:
-    return (
-        os.getenv("GOOGLE_CLOUD_PROJECT")
-        or os.getenv("FIREBASE_PROJECT_ID")
-        or ""
-    )
+    return os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID") or ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +55,7 @@ class AppContainer:
     storage_client: storage.Client
     user_service: UserService
     theme_service: ThemeService
+    university_service: UniversityService
     evaluation_requirement_service: EvaluationRequirementService
     evaluation_prompt_service: EvaluationPromptService
     metric_scoring_service: MetricScoringService
@@ -85,6 +83,7 @@ def build_app_container() -> AppContainer:
 
     user_service = UserService(firebase=firebase)
     theme_service = ThemeService(firebase=firebase)
+    university_service = UniversityService(firebase=firebase)
     evaluation_requirement_service = EvaluationRequirementService(firebase=firebase)
     evaluation_prompt_service = EvaluationPromptService(firebase=firebase)
     metric_scoring_service = MetricScoringService(
@@ -135,6 +134,7 @@ def build_app_container() -> AppContainer:
     verification_service = VerificationService(
         firebase=firebase,
         user_service=user_service,
+        university_service=university_service,
     )
 
     logger.info("App service container initialized (shared Firebase + GCS clients)")
@@ -143,6 +143,7 @@ def build_app_container() -> AppContainer:
         storage_client=storage_client,
         user_service=user_service,
         theme_service=theme_service,
+        university_service=university_service,
         evaluation_requirement_service=evaluation_requirement_service,
         evaluation_prompt_service=evaluation_prompt_service,
         metric_scoring_service=metric_scoring_service,
@@ -188,6 +189,10 @@ def get_user_service(request: Request) -> UserService:
 
 def get_theme_service(request: Request) -> ThemeService:
     return get_container(request).theme_service
+
+
+def get_university_service(request: Request) -> UniversityService:
+    return get_container(request).university_service
 
 
 def get_evaluation_requirement_service(

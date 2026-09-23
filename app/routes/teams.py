@@ -1,5 +1,5 @@
 """
-Hackathon team enrollment routes (solo or 2–4 member teams), scoped per round.
+Hackathon team enrollment routes (solo or 2–5 member teams), scoped per round.
 
     GET  /hackathons/{id}/rounds/{round_index}/participation
     POST /hackathons/{id}/rounds/{round_index}/enroll/solo

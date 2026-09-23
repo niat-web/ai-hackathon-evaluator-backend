@@ -8,6 +8,7 @@ from app.exceptions import (
     BadRequestError,
     ConflictError,
     ForbiddenError,
+    NotFoundError,
     TooManyRequestsError,
 )
 from app.models.verification_model import (
@@ -60,9 +61,7 @@ class FakeFirebase:
         return matches
 
     def create_user(self, email, password, display_name=""):
-        self.created.append(
-            {"email": email, "password": password, "display_name": display_name}
-        )
+        self.created.append({"email": email, "password": password, "display_name": display_name})
         return {"user_id": "new-student-uid", "email": email}
 
     def delete_user(self, user_id):
@@ -121,9 +120,7 @@ def test_start_rejects_existing_email():
         {"email": "ada@example.com", "mobile_no": "+911111111111"},
     )
     with pytest.raises(ConflictError) as exc:
-        service.start(
-            RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
-        )
+        service.start(RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210"))
     assert exc.value.code == "EMAIL_TAKEN"
 
 
@@ -146,12 +143,8 @@ def test_merge_session_adds_second_identifier_without_resetting_other():
     now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
     service, firebase, email = _service(now)
     session_id = service.start(RegisterStartRequest(email="ada@example.com"))
-    service.send_email_otp(
-        EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
-    )
-    service.verify_email_otp(
-        EmailVerifyOtpRequest(session_id=session_id, code="123456")
-    )
+    service.send_email_otp(EmailSendOtpRequest(session_id=session_id, email="ada@example.com"))
+    service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="123456"))
 
     merged = service.start(
         RegisterStartRequest(
@@ -173,23 +166,17 @@ def test_email_otp_expiry_and_invalid_code():
     session_id = service.start(
         RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
     )
-    service.send_email_otp(
-        EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
-    )
+    service.send_email_otp(EmailSendOtpRequest(session_id=session_id, email="ada@example.com"))
     assert email.sent_to == ["ada@example.com"]
     assert email.pop_last_code() == "123456"
 
     with pytest.raises(BadRequestError) as invalid:
-        service.verify_email_otp(
-            EmailVerifyOtpRequest(session_id=session_id, code="000000")
-        )
+        service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="000000"))
     assert invalid.value.code == "INVALID_CODE"
 
     service._now = lambda: now + timedelta(minutes=11)
     with pytest.raises(BadRequestError) as expired:
-        service.verify_email_otp(
-            EmailVerifyOtpRequest(session_id=session_id, code="123456")
-        )
+        service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="123456"))
     assert expired.value.code == "EXPIRED"
 
 
@@ -199,18 +186,12 @@ def test_email_otp_too_many_attempts_invalidates_code():
     session_id = service.start(
         RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
     )
-    service.send_email_otp(
-        EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
-    )
+    service.send_email_otp(EmailSendOtpRequest(session_id=session_id, email="ada@example.com"))
     for _ in range(4):
         with pytest.raises(BadRequestError):
-            service.verify_email_otp(
-                EmailVerifyOtpRequest(session_id=session_id, code="000000")
-            )
+            service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="000000"))
     with pytest.raises(TooManyRequestsError) as exc:
-        service.verify_email_otp(
-            EmailVerifyOtpRequest(session_id=session_id, code="000000")
-        )
+        service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="000000"))
     assert exc.value.code == "TOO_MANY_ATTEMPTS"
     session = firebase.get_document("verification_sessions", session_id)
     assert session["email_code_hash"] is None
@@ -235,12 +216,8 @@ def test_verify_then_complete_happy_path():
     session_id = service.start(
         RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
     )
-    service.send_email_otp(
-        EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
-    )
-    service.verify_email_otp(
-        EmailVerifyOtpRequest(session_id=session_id, code="123456")
-    )
+    service.send_email_otp(EmailSendOtpRequest(session_id=session_id, email="ada@example.com"))
+    service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="123456"))
     service.verify_phone_token(
         VerifyPhoneTokenRequest(
             session_id=session_id,
@@ -249,6 +226,17 @@ def test_verify_then_complete_happy_path():
         )
     )
     assert firebase.deleted_users == ["temp-phone-uid"]
+    firebase.set_document(
+        "universities",
+        "uni-niat",
+        {
+            "name": "NIAT",
+            "location": "Hyderabad",
+            "created_by": "admin",
+            "created_at": "2026-08-18T12:00:00+05:30",
+            "updated_at": "2026-08-18T12:00:00+05:30",
+        },
+    )
 
     created = service.complete(
         RegisterCompleteRequest(
@@ -256,7 +244,8 @@ def test_verify_then_complete_happy_path():
             first_name="Ada",
             last_name="Lovelace",
             email="ada@example.com",
-            university_name="NIAT",
+            university_id="uni-niat",
+            university_name="ignored-client-text",
             niat_id="N123",
             mobile_number="+919876543210",
             password="secret12",
@@ -267,8 +256,38 @@ def test_verify_then_complete_happy_path():
     assert user["email_verified"] is True
     assert user["phone_verified"] is True
     assert user["first_name"] == "Ada"
+    assert user["university"] == "NIAT"
+    assert user["university_id"] == "uni-niat"
+    assert user["university_location"] == "Hyderabad"
     assert user["team_members"] == []
     assert firebase.get_document("verification_sessions", session_id) is None
+
+
+def test_complete_rejects_unknown_university():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    session_id = service.start(
+        RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
+    )
+    firebase.update_document(
+        "verification_sessions",
+        session_id,
+        {"email_verified": True, "phone_verified": True},
+    )
+    with pytest.raises(NotFoundError) as exc:
+        service.complete(
+            RegisterCompleteRequest(
+                session_id=session_id,
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada@example.com",
+                university_id="missing-uni",
+                niat_id="N123",
+                mobile_number="+919876543210",
+                password="secret12",
+            )
+        )
+    assert exc.value.code == "UNKNOWN_UNIVERSITY"
 
 
 def test_complete_rejected_without_both_verifications():
@@ -284,6 +303,7 @@ def test_complete_rejected_without_both_verifications():
                 first_name="Ada",
                 last_name="Lovelace",
                 email="ada@example.com",
+                university_id="uni-niat",
                 university_name="NIAT",
                 niat_id="N123",
                 mobile_number="+919876543210",
@@ -311,6 +331,7 @@ def test_complete_rejects_swapped_email():
                 first_name="Ada",
                 last_name="Lovelace",
                 email="eve@example.com",
+                university_id="uni-niat",
                 university_name="NIAT",
                 niat_id="N123",
                 mobile_number="+919876543210",
@@ -328,9 +349,7 @@ def test_shared_ip_allows_many_different_emails():
     for index in range(8):
         address = f"student{index}@example.com"
         phone = f"+91987654000{index}"
-        session_id = service.start(
-            RegisterStartRequest(email=address, mobile_number=phone)
-        )
+        session_id = service.start(RegisterStartRequest(email=address, mobile_number=phone))
         service.send_email_otp(
             EmailSendOtpRequest(session_id=session_id, email=address),
             client_ip=shared_ip,
@@ -363,9 +382,7 @@ def test_low_ip_cap_still_blocks_when_configured(monkeypatch):
     for index in range(2):
         address = f"user{index}@example.com"
         session_id = service.start(
-            RegisterStartRequest(
-                email=address, mobile_number=f"+91987654100{index}"
-            )
+            RegisterStartRequest(email=address, mobile_number=f"+91987654100{index}")
         )
         service.send_email_otp(
             EmailSendOtpRequest(session_id=session_id, email=address),

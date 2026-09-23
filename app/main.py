@@ -21,6 +21,7 @@ from app.routes import (
     submissions,
     teams,
     theme,
+    university,
 )
 from app.utils.async_io import run_sync
 from app.utils.cors_config import (
@@ -126,6 +127,7 @@ app.include_router(submissions.router)
 app.include_router(hackathon.router)
 app.include_router(teams.router)
 app.include_router(theme.router)
+app.include_router(university.router)
 app.include_router(evaluation_requirement.router)
 app.include_router(evaluation_prompt.router)
 app.include_router(metric_scoring.router)

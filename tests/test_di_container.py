@@ -36,6 +36,8 @@ def test_build_app_container_shares_firebase_and_storage():
     assert container.storage_client is fake_storage
     assert container.user_service.firebase is fake_firebase
     assert container.theme_service.firebase is fake_firebase
+    assert container.university_service.firebase is fake_firebase
+    assert container.verification_service.university_service is container.university_service
     assert container.hackathon_service.firebase is fake_firebase
     assert container.hackathon_service.storage_client is fake_storage
     assert container.submission_service.firebase is fake_firebase

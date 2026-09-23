@@ -31,8 +31,7 @@ class ReviewMixin:
             m if isinstance(m, dict) else m.model_dump() for m in (manual_metrics or [])
         ]
         override_payloads = [
-            m if isinstance(m, dict) else m.model_dump()
-            for m in (ai_overrides or [])
+            m if isinstance(m, dict) else m.model_dump() for m in (ai_overrides or [])
         ]
         if override_ai_scores and not override_payloads:
             raise ValueError("ai_overrides is required when override_ai_scores is true")
@@ -40,24 +39,18 @@ class ReviewMixin:
             override_payloads = []
 
         def _txn(transaction):
-            submission = self.firebase.txn_get(
-                transaction, self.collection, submission_id
-            )
+            submission = self.firebase.txn_get(transaction, self.collection, submission_id)
             if not submission:
                 raise ValueError("Submission not found")
             if submission.get("assigned_evaluator_id") != evaluator_user_id:
                 raise ValueError("Only the assigned evaluator can submit this evaluation")
             if submission.get("status") != "completed":
-                raise ValueError(
-                    "AI analysis must be completed before submitting for review"
-                )
+                raise ValueError("AI analysis must be completed before submitting for review")
 
             analysis_id = submission.get("analysis_id")
             if not analysis_id:
                 raise ValueError("No analysis linked to this submission")
-            analysis = self.firebase.txn_get(
-                transaction, self.analysis_collection, analysis_id
-            )
+            analysis = self.firebase.txn_get(transaction, self.analysis_collection, analysis_id)
             if not analysis or analysis.get("status") != "completed":
                 raise ValueError("Analysis report is not ready to submit")
 
@@ -65,9 +58,7 @@ class ReviewMixin:
             if review_status == "pending_review":
                 raise ValueError("Evaluation is already pending admin review")
             if review_status == "approved":
-                raise ValueError(
-                    "Evaluation is already approved; unpublish/request changes first"
-                )
+                raise ValueError("Evaluation is already approved; unpublish/request changes first")
 
             scorecard, computed, override_audit = self._merge_review_into_scorecard(
                 submission=submission,
@@ -106,9 +97,7 @@ class ReviewMixin:
                 "review_notes": None,
                 "updated_at": now,
             }
-            self.firebase.txn_update(
-                transaction, self.collection, submission_id, update
-            )
+            self.firebase.txn_update(transaction, self.collection, submission_id, update)
             if scorecard is not None:
                 self.firebase.txn_update(
                     transaction,
@@ -204,21 +193,37 @@ class ReviewMixin:
                 return req_id
         return None
 
+    def _reports_auto_publish(self, hackathon_id: str | None) -> bool:
+        """True when this hackathon publishes a report as soon as it is approved."""
+        if not hackathon_id:
+            return False
+        getter = getattr(getattr(self, "hackathon_service", None), "get_hackathon", None)
+        if getter is None:
+            return False
+        hackathon = getter(hackathon_id)
+        if not isinstance(hackathon, dict):
+            return False
+        return bool(hackathon.get("auto_publish_reports"))
+
     def approve_evaluation(
         self,
         submission_id: str,
         admin_user_id: str,
         final_score: float | None = None,
         review_notes: str | None = None,
+        publish_now: bool = False,
     ) -> dict[str, Any]:
-        """Admin approves evaluation → final score + report become visible to student."""
+        """
+        Admin approves an evaluation.
+
+        Students see the report only when it is published: ``publish_now``, the
+        hackathon auto-publish setting, or a later publish call.
+        """
         notes = review_notes.strip() if review_notes else None
         now = now_ist_iso()
 
         def _txn(transaction):
-            submission = self.firebase.txn_get(
-                transaction, self.collection, submission_id
-            )
+            submission = self.firebase.txn_get(transaction, self.collection, submission_id)
             if not submission:
                 raise ValueError("Submission not found")
             if submission.get("status") != "completed":
@@ -226,44 +231,138 @@ class ReviewMixin:
 
             review_status = submission.get("review_status") or "none"
             if review_status not in ("pending_review", "approved"):
-                raise ValueError(
-                    "Evaluation must be submitted for review before admin approval"
-                )
+                raise ValueError("Evaluation must be submitted for review before admin approval")
 
             analysis_id = submission.get("analysis_id")
             if not analysis_id:
                 raise ValueError("No analysis linked to this submission")
-            analysis = self.firebase.txn_get(
-                transaction, self.analysis_collection, analysis_id
-            )
+            analysis = self.firebase.txn_get(transaction, self.analysis_collection, analysis_id)
             if not analysis or analysis.get("status") != "completed":
                 raise ValueError("Analysis report is not ready to approve")
 
             resolved_score = (
-                float(final_score)
-                if final_score is not None
-                else submission.get("final_score")
+                float(final_score) if final_score is not None else submission.get("final_score")
             )
             if resolved_score is None:
                 raise ValueError("final_score is missing on this submission")
 
+            already_published = bool(submission.get("report_published"))
+            should_publish = (
+                publish_now
+                or already_published
+                or self._reports_auto_publish(submission.get("hackathon_id"))
+            )
             update = {
                 "review_status": "approved",
                 "final_score": float(resolved_score),
                 "review_notes": notes,
                 "reviewed_at": now,
                 "reviewed_by": admin_user_id,
-                "report_published": True,
-                "published_at": now,
-                "published_by": admin_user_id,
                 "updated_at": now,
             }
-            self.firebase.txn_update(
-                transaction, self.collection, submission_id, update
-            )
+            if should_publish:
+                update["report_published"] = True
+                update["published_at"] = (
+                    submission.get("published_at") if already_published else now
+                )
+                update["published_by"] = (
+                    submission.get("published_by") if already_published else admin_user_id
+                )
+            else:
+                update["report_published"] = False
+                update["published_at"] = None
+                update["published_by"] = None
+            self.firebase.txn_update(transaction, self.collection, submission_id, update)
             return {"id": submission_id, **submission, **update}
 
         return self.firebase.run_transaction(_txn)
+
+    def report_publishing_settings(self, hackathon_id: str) -> dict[str, Any]:
+        """Approved / published counts for the hackathon Settings toggle."""
+        hackathon = self._require_hackathon(hackathon_id)
+        approved, unpublished = self._approved_report_buckets(hackathon_id)
+        return {
+            "hackathon_id": hackathon_id,
+            "auto_publish_reports": bool(hackathon.get("auto_publish_reports")),
+            "approved_count": len(approved),
+            "unpublished_approved_count": len(unpublished),
+            "published_count": len(approved) - len(unpublished),
+            "published_now_count": 0,
+        }
+
+    def set_auto_publish_reports(
+        self,
+        hackathon_id: str,
+        enabled: bool,
+        admin_user_id: str,
+    ) -> dict[str, Any]:
+        """
+        Save the Settings toggle.
+
+        Turning it on publishes every approved report that students cannot see
+        yet. A few hundred Firestore updates fit in one request, so this does
+        not use Cloud Tasks.
+        """
+        self._require_hackathon(hackathon_id)
+        now = now_ist_iso()
+        self.firebase.update_document(
+            self.hackathon_service.collection,
+            hackathon_id,
+            {
+                "auto_publish_reports": bool(enabled),
+                "auto_publish_reports_updated_at": now,
+                "auto_publish_reports_updated_by": admin_user_id,
+                "updated_at": now,
+            },
+        )
+        published_now = 0
+        if enabled:
+            published_now = self.publish_approved_reports(hackathon_id, admin_user_id)
+        snapshot = self.report_publishing_settings(hackathon_id)
+        snapshot["published_now_count"] = published_now
+        return snapshot
+
+    def publish_approved_reports(self, hackathon_id: str, admin_user_id: str) -> int:
+        """Publish every approved, still-hidden report for this hackathon."""
+        _approved, unpublished = self._approved_report_buckets(hackathon_id)
+        if not unpublished:
+            return 0
+        now = now_ist_iso()
+        operations = [
+            {
+                "type": "update",
+                "collection": self.collection,
+                "document_id": submission["id"],
+                "data": {
+                    "report_published": True,
+                    "published_at": now,
+                    "published_by": admin_user_id,
+                    "updated_at": now,
+                },
+            }
+            for submission in unpublished
+            if submission.get("id")
+        ]
+        # Firestore batches accept at most 500 writes.
+        for start in range(0, len(operations), 400):
+            self.firebase.batch_write(operations[start : start + 400])
+        return len(operations)
+
+    def _require_hackathon(self, hackathon_id: str) -> dict[str, Any]:
+        hackathon = self.hackathon_service.get_hackathon(hackathon_id)
+        if not isinstance(hackathon, dict):
+            raise ValueError("Hackathon not found")
+        return hackathon
+
+    def _approved_report_buckets(
+        self, hackathon_id: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        submissions = self.firebase.query_collection(
+            self.collection, "hackathon_id", "==", hackathon_id
+        )
+        approved = [item for item in submissions if (item.get("review_status") or "") == "approved"]
+        unpublished = [item for item in approved if not item.get("report_published")]
+        return approved, unpublished
 
     def request_evaluation_changes(
         self,
@@ -276,17 +375,13 @@ class ReviewMixin:
         now = now_ist_iso()
 
         def _txn(transaction):
-            submission = self.firebase.txn_get(
-                transaction, self.collection, submission_id
-            )
+            submission = self.firebase.txn_get(transaction, self.collection, submission_id)
             if not submission:
                 raise ValueError("Submission not found")
 
             review_status = submission.get("review_status") or "none"
             if review_status not in ("pending_review", "approved"):
-                raise ValueError(
-                    "Only pending or approved evaluations can be sent back"
-                )
+                raise ValueError("Only pending or approved evaluations can be sent back")
 
             update = {
                 "review_status": "changes_requested",
@@ -298,9 +393,7 @@ class ReviewMixin:
                 "published_by": None,
                 "updated_at": now,
             }
-            self.firebase.txn_update(
-                transaction, self.collection, submission_id, update
-            )
+            self.firebase.txn_update(transaction, self.collection, submission_id, update)
             return {"id": submission_id, **submission, **update}
 
         return self.firebase.run_transaction(_txn)

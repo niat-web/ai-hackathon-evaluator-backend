@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.string_utils import strip_optional, strip_required
 from app.models.theme_model import ThemeSummary
+from app.utils.hackathon_round import MAX_ROUND_TEAM_SIZE
 
 
 def _normalize_optional_url(value: Optional[str]) -> Optional[str]:
@@ -41,10 +42,10 @@ class TimelineRound(BaseModel):
     max_team_size: int = Field(
         1,
         ge=1,
-        le=4,
+        le=MAX_ROUND_TEAM_SIZE,
         description=(
             "Max participants for this round's team including the leader "
-            "(1 = Solo, 2–4 = team submission)."
+            "(1 = Solo, 2–5 = team submission)."
         ),
     )
     team_mode_label: Optional[str] = Field(
@@ -171,9 +172,7 @@ class HackathonCreateRequest(BaseModel):
     timeline: list[TimelineRound] = Field(default_factory=list)
     prizes: HackathonPrizes
 
-    @field_validator(
-        "name", "description", "guidelines", "evaluator_guidelines", mode="before"
-    )
+    @field_validator("name", "description", "guidelines", "evaluator_guidelines", mode="before")
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
         return strip_required(value)
@@ -223,9 +222,7 @@ class HackathonUpdateRequest(BaseModel):
     timeline: Optional[list[TimelineRound]] = None
     prizes: Optional[HackathonPrizes] = None
 
-    @field_validator(
-        "name", "description", "guidelines", "evaluator_guidelines", mode="before"
-    )
+    @field_validator("name", "description", "guidelines", "evaluator_guidelines", mode="before")
     @classmethod
     def normalize_optional_required_text(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -302,8 +299,22 @@ class HackathonResponse(BaseModel):
     )
     github_ai_evaluation: bool = Field(
         False,
+        description=("Legacy hackathon-level default for rounds that omit github_ai_evaluation."),
+    )
+    max_submissions: int = Field(
+        1,
+        ge=1,
+        le=3,
         description=(
-            "Legacy hackathon-level default for rounds that omit github_ai_evaluation."
+            "How many times a student or team may submit for each round of this "
+            "hackathon. Default 1, maximum 3."
+        ),
+    )
+    auto_publish_reports: bool = Field(
+        False,
+        description=(
+            "When true, approving an evaluation also publishes the report to students. "
+            "Turning this on publishes every already-approved unpublished report."
         ),
     )
     banner_path: Optional[str] = Field(
@@ -374,3 +385,54 @@ class HackathonCatalogItem(BaseModel):
         description="IST calendar days until featured round end_date when open.",
     )
     featured_round: HackathonCatalogRound
+
+
+class SubmissionLimitUpdateRequest(BaseModel):
+    """Hackathon Settings: how many submissions each round accepts."""
+
+    max_submissions: int = Field(
+        ...,
+        ge=1,
+        le=3,
+        description="1, 2, or 3. Default for a new hackathon is 1.",
+    )
+
+
+class SubmissionLimitResponse(BaseModel):
+    hackathon_id: str
+    max_submissions: int = Field(..., ge=1, le=3)
+
+
+class ReportPublishingUpdateRequest(BaseModel):
+    """Hackathon Settings toggle for releasing approved reports to students."""
+
+    auto_publish_reports: bool = Field(
+        ...,
+        description=(
+            "When turned on, every approved report that is not yet published "
+            "is published immediately, and later approvals publish automatically."
+        ),
+    )
+
+
+class ReportPublishingResponse(BaseModel):
+    """Counts for the Hackathon Settings auto-publish control."""
+
+    hackathon_id: str
+    auto_publish_reports: bool
+    approved_count: int = Field(
+        ...,
+        description="Submissions with review_status=approved.",
+    )
+    unpublished_approved_count: int = Field(
+        ...,
+        description="Approved reports students cannot see yet.",
+    )
+    published_count: int = Field(
+        ...,
+        description="Approved reports already visible to students.",
+    )
+    published_now_count: int = Field(
+        0,
+        description="How many reports this request just published. Zero on GET.",
+    )

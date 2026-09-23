@@ -219,6 +219,7 @@ def test_register_complete_rejects_password_reset_session():
                 first_name="Ada",
                 last_name="Lovelace",
                 email="ada@example.com",
+                university_id="uni-niat",
                 university_name="NIAT",
                 niat_id="NIAT1",
                 mobile_number="9876543210",

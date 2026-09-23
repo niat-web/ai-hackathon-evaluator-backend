@@ -99,3 +99,15 @@ class HackathonParticipationResponse(BaseModel):
     ) = None
     already_submitted: bool = False
     existing_submission_id: str | None = None
+    max_submissions: int = Field(
+        1,
+        description="How many submissions this hackathon accepts for the round (1–3).",
+    )
+    submission_count: int = Field(
+        0,
+        description="How many submissions this student or team has already made for the round.",
+    )
+    submissions_remaining: int = Field(
+        1,
+        description="How many more submissions are still accepted for the round.",
+    )

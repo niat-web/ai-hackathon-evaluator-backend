@@ -9,11 +9,16 @@ from app.exceptions import BadRequestError
 from app.utils.time import now_ist
 
 
+MAX_ROUND_TEAM_SIZE = 5
+DEFAULT_MAX_SUBMISSIONS = 1
+MAX_SUBMISSIONS_PER_ROUND = 3
+
 TEAM_MODE_LABELS = {
     1: "Solo",
     2: "2 Members",
     3: "3 Members",
     4: "4 Members",
+    5: "5 Members",
 }
 
 RoundStatus = Literal["draft", "scheduled", "open", "closed"]
@@ -34,7 +39,22 @@ def normalize_max_team_size(value: Any) -> int:
         size = int(value)
     except (TypeError, ValueError):
         size = 1
-    return max(1, min(4, size))
+    return max(1, min(MAX_ROUND_TEAM_SIZE, size))
+
+
+def normalize_max_submissions(value: Any) -> int:
+    """How many times a student or team may submit for one round. Default 1, max 3."""
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        size = DEFAULT_MAX_SUBMISSIONS
+    return max(1, min(MAX_SUBMISSIONS_PER_ROUND, size))
+
+
+def hackathon_max_submissions(hackathon: dict[str, Any] | None) -> int:
+    if not hackathon:
+        return DEFAULT_MAX_SUBMISSIONS
+    return normalize_max_submissions(hackathon.get("max_submissions", DEFAULT_MAX_SUBMISSIONS))
 
 
 def hackathon_default_video_required(hackathon: dict[str, Any]) -> bool:
@@ -52,9 +72,7 @@ def hackathon_default_github_ai(hackathon: dict[str, Any]) -> bool:
     return bool(hackathon.get("github_ai_evaluation", False))
 
 
-def get_timeline_round(
-    hackathon: dict[str, Any], round_index: int
-) -> dict[str, Any] | None:
+def get_timeline_round(hackathon: dict[str, Any], round_index: int) -> dict[str, Any] | None:
     timeline = hackathon.get("timeline") or []
     if round_index < 0 or round_index >= len(timeline):
         return None
@@ -69,9 +87,7 @@ def round_title(hackathon: dict[str, Any], round_index: int) -> str:
     return str(round_.get("title") or f"Round {round_index + 1}")
 
 
-def round_working_demo_video_required(
-    hackathon: dict[str, Any], round_index: int
-) -> bool:
+def round_working_demo_video_required(hackathon: dict[str, Any], round_index: int) -> bool:
     round_ = get_timeline_round(hackathon, round_index)
     if round_ is None:
         return hackathon_default_video_required(hackathon)
@@ -255,14 +271,10 @@ def pick_featured_published_round(
         published.append((index, data))
     if not published:
         return None
-    open_rounds = [
-        item for item in published if item[1].get("round_status") == "open"
-    ]
+    open_rounds = [item for item in published if item[1].get("round_status") == "open"]
     if open_rounds:
         return open_rounds[0]
-    scheduled = [
-        item for item in published if item[1].get("round_status") == "scheduled"
-    ]
+    scheduled = [item for item in published if item[1].get("round_status") == "scheduled"]
     if scheduled:
         return scheduled[0]
     return published[-1]
@@ -275,9 +287,7 @@ def catalog_status_for_round(
     closing_soon_days: int = CLOSING_SOON_DAYS,
 ) -> CatalogStatus:
     """Map a published round to homepage status (IST calendar days)."""
-    student_status = round_.get("round_status") or round_student_status(
-        round_, now=now
-    )
+    student_status = round_.get("round_status") or round_student_status(round_, now=now)
     if student_status == "closed":
         return "closed"
     if student_status != "open":

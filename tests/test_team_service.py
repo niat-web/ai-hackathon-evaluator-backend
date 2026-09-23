@@ -245,7 +245,7 @@ def test_one_submission_per_student_per_round():
 
     with pytest.raises(ConflictError) as exc:
         svc.assert_submission_allowed("hack-1", 0, "solo-1")
-    assert exc.value.code == "ALREADY_SUBMITTED"
+    assert exc.value.code == "SUBMISSION_LIMIT_REACHED"
 
     participation = svc.get_participation("hack-1", 0, student)
     assert participation.already_submitted is True
@@ -261,6 +261,58 @@ def test_one_submission_per_student_per_round():
     round2 = svc.get_participation("hack-1", 1, student)
     assert round2.already_submitted is False
     assert round2.can_submit is True
+    assert participation.max_submissions == 1
+    assert participation.submission_count == 1
+    assert participation.submissions_remaining == 0
+    assert "exhausted the submission limit" in (participation.block_reason or "")
+
+
+def test_two_submissions_allowed_when_hackathon_cap_is_two():
+    svc = _service(
+        timeline=[
+            _open_round(title="Round 1", max_team_size=1),
+        ]
+    )
+    svc.hackathon_service.hackathons["hack-1"]["max_submissions"] = 2
+    student = _student("solo-1")
+    svc.enroll_solo("hack-1", 0, student)
+    svc.firebase.set_document(
+        "submissions",
+        "sub-1",
+        {
+            "student_id": "solo-1",
+            "hackathon_id": "hack-1",
+            "round_index": 0,
+            "created_at": "2026-01-01T00:00:00+05:30",
+        },
+    )
+
+    svc.assert_submission_allowed("hack-1", 0, "solo-1")
+    once = svc.get_participation("hack-1", 0, student)
+    assert once.can_submit is True
+    assert once.max_submissions == 2
+    assert once.submission_count == 1
+    assert once.submissions_remaining == 1
+    assert once.pending_action == "ready"
+
+    svc.firebase.set_document(
+        "submissions",
+        "sub-2",
+        {
+            "student_id": "solo-1",
+            "hackathon_id": "hack-1",
+            "round_index": 0,
+            "created_at": "2026-01-02T00:00:00+05:30",
+        },
+    )
+    with pytest.raises(ConflictError) as exc:
+        svc.assert_submission_allowed("hack-1", 0, "solo-1")
+    assert exc.value.code == "SUBMISSION_LIMIT_REACHED"
+    twice = svc.get_participation("hack-1", 0, student)
+    assert twice.can_submit is False
+    assert twice.submission_count == 2
+    assert twice.submissions_remaining == 0
+    assert twice.pending_action == "already_submitted"
 
 
 def test_refresh_join_code_revokes_previous():

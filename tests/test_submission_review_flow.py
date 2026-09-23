@@ -129,9 +129,7 @@ def test_submit_for_review_applies_ai_overrides(service: SubmissionService):
     assert sub_update["final_score"] == 17.5
     assert sub_update["scorecard"]["ai_total"] == 17.5
     ps = next(
-        m
-        for m in sub_update["scorecard"]["metrics"]
-        if m["field_key"] == "problem_statement"
+        m for m in sub_update["scorecard"]["metrics"] if m["field_key"] == "problem_statement"
     )
     assert ps["source"] == "evaluator_override"
     assert ps["score"] == 0
@@ -152,13 +150,17 @@ def test_submit_for_review_requires_completed_analysis(service: SubmissionServic
         service.submit_for_review("sub-1", "evaluator-1", 50)
 
 
-def test_approve_evaluation_publishes_and_sets_approved(service: SubmissionService):
+def test_approve_evaluation_does_not_publish_by_default(service: SubmissionService):
     base = make_submission_doc(
         status="completed",
         review_status="pending_review",
         final_score=80,
     )
     _wire_reads(service, _doc_without_id(base), {"status": "completed"})
+    service.hackathon_service.get_hackathon.return_value = {
+        "id": "hack-1",
+        "auto_publish_reports": False,
+    }
 
     result = service.approve_evaluation(
         submission_id="sub-1",
@@ -169,10 +171,53 @@ def test_approve_evaluation_publishes_and_sets_approved(service: SubmissionServi
 
     payload = service.firebase.txn_update.call_args[0][3]
     assert payload["review_status"] == "approved"
-    assert payload["report_published"] is True
+    assert payload["report_published"] is False
     assert payload["final_score"] == 85.0
+    assert payload["published_by"] is None
+    assert result["report_published"] is False
+
+
+def test_approve_publish_now_releases_the_report(service: SubmissionService):
+    base = make_submission_doc(
+        status="completed",
+        review_status="pending_review",
+        final_score=80,
+    )
+    _wire_reads(service, _doc_without_id(base), {"status": "completed"})
+    service.hackathon_service.get_hackathon.return_value = {
+        "id": "hack-1",
+        "auto_publish_reports": False,
+    }
+
+    result = service.approve_evaluation(
+        submission_id="sub-1",
+        admin_user_id="admin-1",
+        publish_now=True,
+    )
+
+    payload = service.firebase.txn_update.call_args[0][3]
+    assert payload["review_status"] == "approved"
+    assert payload["report_published"] is True
     assert payload["published_by"] == "admin-1"
     assert result["report_published"] is True
+
+
+def test_approve_auto_publishes_when_hackathon_setting_is_on(service: SubmissionService):
+    base = make_submission_doc(
+        status="completed",
+        review_status="pending_review",
+        final_score=80,
+    )
+    _wire_reads(service, _doc_without_id(base), {"status": "completed"})
+    service.hackathon_service.get_hackathon.return_value = {
+        "id": "hack-1",
+        "auto_publish_reports": True,
+    }
+
+    service.approve_evaluation(submission_id="sub-1", admin_user_id="admin-1")
+    payload = service.firebase.txn_update.call_args[0][3]
+    assert payload["review_status"] == "approved"
+    assert payload["report_published"] is True
 
 
 def test_approve_requires_pending_or_approved(service: SubmissionService):

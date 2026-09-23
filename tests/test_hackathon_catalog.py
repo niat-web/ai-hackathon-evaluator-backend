@@ -3,6 +3,9 @@
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
+
 from app.services.hackathon_service import HackathonService
 from app.utils.hackathon_round import (
     catalog_status_for_round,
@@ -189,3 +192,15 @@ def test_catalog_status_and_team_mode_helpers():
     assert catalog_status_for_round(closing, now=now) == "closing_soon"
     assert catalog_team_mode(1) == ("solo", "Solo")
     assert catalog_team_mode(3) == ("team", "Team")
+    assert catalog_team_mode(5) == ("team", "Team")
+
+
+def test_round_accepts_five_member_teams():
+    from app.models.hackathon_model import TimelineRound
+
+    round_ = TimelineRound(title="Round 1", max_team_size=5)
+    enriched = enrich_timeline_round(round_.model_dump(), hackathon={})
+    assert enriched["max_team_size"] == 5
+    assert enriched["team_mode_label"] == "5 Members"
+    with pytest.raises(ValidationError):
+        TimelineRound(title="Round 1", max_team_size=6)

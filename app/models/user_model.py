@@ -193,6 +193,8 @@ class UserResponse(BaseModel):
     mobile_no: Optional[str] = None
     team_name: Optional[str] = None
     university: Optional[str] = None
+    university_id: Optional[str] = None
+    university_location: Optional[str] = None
     team_leader_name: Optional[str] = None
     team_members: Optional[list[TeamMember]] = None
     approval_status: Optional[ApprovalStatus] = None
@@ -233,8 +235,7 @@ class ChangePasswordRequest(BaseModel):
         min_length=6,
         max_length=128,
         description=(
-            "Current password. Required when REQUIRE_CURRENT_PASSWORD_ON_CHANGE=true "
-            "(default)."
+            "Current password. Required when REQUIRE_CURRENT_PASSWORD_ON_CHANGE=true " "(default)."
         ),
     )
 

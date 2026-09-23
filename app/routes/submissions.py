@@ -846,8 +846,8 @@ async def evaluate_github_ai(
     Run AI GitHub repository analysis for one submission.
 
     Generates evaluation context with Gemini from the student's problem and
-    solution, then POSTs ``github_url`` + ``context`` to ``GITHUB_AI_EVALUATION_URL``.
-    Updates the GitHub scorecard metric; manual GitHub evaluation remains available.
+    solution, then queues ``POST /analyze`` and polls ``GET /analyze/{job_id}``.
+    Stores ``result.scoring.total_score`` on the GitHub scorecard metric.
     """
     if current_user.role not in ("admin", "evaluator"):
         raise HTTPException(
@@ -955,8 +955,9 @@ async def approve_evaluation(
     """
     Admin approves a pending evaluation.
 
-    Sets ``review_status=approved``, locks ``final_score``, and publishes the
-    report so the student can see the result.
+    Sets ``review_status=approved`` and locks ``final_score``. The student sees
+    the report only when ``publish_now`` is true, the hackathon auto-publishes,
+    or a later ``POST /submissions/{id}/publish`` call.
     """
     try:
         submission = await run_sync(
@@ -965,6 +966,7 @@ async def approve_evaluation(
             admin_user_id=admin.user_id,
             final_score=request.final_score,
             review_notes=request.review_notes,
+            publish_now=request.publish_now,
         )
     except ValueError as e:
         raise _http_from_value_error(e) from e
@@ -1005,10 +1007,10 @@ async def publish_submission_report(
     service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
-    Publish or unpublish the analysis report for the student. **Admin only.**
+    Publish or unpublish an **approved** report for the student. **Admin only.**
 
-    Prefer ``approve-evaluation`` for the evaluator review workflow. This remains
-    available for direct admin publish without the review gate.
+    Use this as Publish now after Approve. Publishing a report that is not
+    ``review_status=approved`` is rejected.
     """
     try:
         submission = await run_sync(

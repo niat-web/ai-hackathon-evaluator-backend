@@ -5,6 +5,7 @@ Hackathon service — admin-created hackathons with banner storage in GCS.
 import logging
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.utils.time import now_ist, now_ist_iso
@@ -16,7 +17,12 @@ from app.models.hackathon_model import HackathonCreateRequest, HackathonUpdateRe
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
 from app.services.theme_service import ThemeService
-from app.utils.gcs_video import build_storage_client, generate_signed_url
+from app.utils.banner_cache import (
+    BANNER_CACHE_CONTROL,
+    banner_signed_url_is_fresh,
+    sign_banner_url,
+)
+from app.utils.gcs_video import build_storage_client, parse_gs_uri
 from app.utils.hackathon_round import (
     CATALOG_STATUS_LABELS,
     TEAM_MODE_LABELS,
@@ -27,12 +33,14 @@ from app.utils.hackathon_round import (
     hackathon_default_auto_ai,
     hackathon_default_github_ai,
     hackathon_default_video_required,
+    normalize_max_submissions,
+    normalize_max_team_size,
     parse_iso_date,
     pick_featured_published_round,
     round_is_published,
     validate_round_publishable,
 )
-from app.utils.image_upload import resolve_image_content_type
+from app.utils.image_upload import prepare_card_banner, resolve_image_content_type
 
 
 logger = logging.getLogger(__name__)
@@ -50,10 +58,7 @@ class HackathonService:
         theme_service: ThemeService | None = None,
         storage_client: storage.Client | None = None,
     ):
-        self.project = (
-            os.getenv("GOOGLE_CLOUD_PROJECT")
-            or os.getenv("FIREBASE_PROJECT_ID")
-        )
+        self.project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID")
         self.bucket_name = os.getenv("EVALUATION_BUCKET_NAME") or os.getenv("VIDEO_BUCKET_NAME")
         self.storage_client: storage.Client | None = storage_client
         self.firebase = firebase or FirebaseService()
@@ -106,11 +111,10 @@ class HackathonService:
         """List all hackathons (most recent first)."""
         hackathons = self.firebase.get_collection(self.collection)
         hackathons.sort(key=lambda h: h.get("created_at", ""), reverse=True)
+        self._prime_banner_urls(hackathons)
         return hackathons
 
-    def list_hackathon_catalog(
-        self, *, include_closed: bool = True
-    ) -> list[dict[str, Any]]:
+    def list_hackathon_catalog(self, *, include_closed: bool = True) -> list[dict[str, Any]]:
         """
         Homepage cards: hackathons with at least one published round.
 
@@ -146,19 +150,12 @@ class HackathonService:
         if end is not None and status in ("open", "closing_soon"):
             days_until_end = (end - now.date()).days
 
-        banner_url = None
-        banner_path = data.get("banner_path")
-        if banner_path:
-            try:
-                banner_url = generate_signed_url(
-                    self._get_storage_client(),
-                    banner_path,
-                )
-            except Exception:
-                logger.warning(
-                    "Catalog banner URL failed for hackathon %s", data.get("id")
-                )
-                banner_url = None
+        self.attach_banner_url(
+            data,
+            collection=self.collection,
+            document_id=str(data.get("id") or "") or None,
+        )
+        banner_url = data.get("banner_url")
 
         theme_ids = data.get("theme_ids") or []
         themes = self.theme_service.get_themes_by_ids(theme_ids)
@@ -204,6 +201,28 @@ class HackathonService:
                 or TEAM_MODE_LABELS.get(max_size, "Solo"),
             },
         }
+
+    def get_submission_limit(self, hackathon_id: str) -> dict[str, Any]:
+        """Current per-round submission cap for this hackathon."""
+        existing = self.get_hackathon(hackathon_id)
+        if not existing:
+            raise ValueError("Hackathon not found")
+        return {
+            "hackathon_id": hackathon_id,
+            "max_submissions": normalize_max_submissions(existing.get("max_submissions")),
+        }
+
+    def set_submission_limit(self, hackathon_id: str, max_submissions: int) -> dict[str, Any]:
+        """Save the Settings cap. Applies to every round of this hackathon."""
+        if not self.get_hackathon(hackathon_id):
+            raise ValueError("Hackathon not found")
+        limit = normalize_max_submissions(max_submissions)
+        self.firebase.update_document(
+            self.collection,
+            hackathon_id,
+            {"max_submissions": limit, "updated_at": now_ist_iso()},
+        )
+        return {"hackathon_id": hackathon_id, "max_submissions": limit}
 
     def get_hackathon(self, hackathon_id: str) -> dict[str, Any] | None:
         """Fetch a single hackathon by id."""
@@ -256,12 +275,8 @@ class HackathonService:
                     incoming = self._normalize_round_for_storage(incoming, published=False)
                 if isinstance(prior, dict) and prior.get("leaderboard_published"):
                     incoming["leaderboard_published"] = True
-                    incoming["leaderboard_published_at"] = prior.get(
-                        "leaderboard_published_at"
-                    )
-                    incoming["leaderboard_published_by"] = prior.get(
-                        "leaderboard_published_by"
-                    )
+                    incoming["leaderboard_published_at"] = prior.get("leaderboard_published_at")
+                    incoming["leaderboard_published_by"] = prior.get("leaderboard_published_by")
                 else:
                     incoming["leaderboard_published"] = False
                     incoming["leaderboard_published_at"] = None
@@ -271,7 +286,11 @@ class HackathonService:
         if request.prizes is not None:
             update["prizes"] = request.prizes.model_dump()
         if banner is not None:
+            previous = existing.get("banner_path")
             update["banner_path"] = self._upload_banner(hackathon_id, banner)
+            update["banner_signed_url"] = None
+            update["banner_signed_url_expires_at"] = None
+            self._delete_banner_object(previous)
 
         # Validate the resulting date range if either date changed.
         start = update.get("start_date", existing.get("start_date"))
@@ -324,9 +343,7 @@ class HackathonService:
         """Return hackathon payload with only published timeline rounds."""
         enriched = self.enrich_hackathon_for_response(hackathon)
         enriched["timeline"] = [
-            round_
-            for round_ in enriched.get("timeline") or []
-            if round_.get("published")
+            round_ for round_ in enriched.get("timeline") or [] if round_.get("published")
         ]
         return enriched
 
@@ -357,6 +374,9 @@ class HackathonService:
             "github_ai_evaluation",
             hackathon_default_github_ai(enriched),
         )
+        enriched.setdefault("auto_publish_reports", False)
+        enriched.setdefault("max_submissions", 1)
+        enriched["max_submissions"] = normalize_max_submissions(enriched.get("max_submissions"))
         enriched.setdefault("export_spreadsheet_id", None)
         enriched.setdefault("export_spreadsheet_url", None)
         enriched.setdefault("export_spreadsheet_synced_at", None)
@@ -365,14 +385,11 @@ class HackathonService:
             enriched.get("timeline") or [],
         )
 
-        banner_path = enriched.get("banner_path")
-        if banner_path:
-            enriched["banner_url"] = generate_signed_url(
-                self._get_storage_client(),
-                banner_path,
-            )
-        else:
-            enriched["banner_url"] = None
+        self.attach_banner_url(
+            enriched,
+            collection=self.collection,
+            document_id=str(enriched.get("id") or "") or None,
+        )
 
         theme_ids = enriched.get("theme_ids") or []
         themes = self.theme_service.get_themes_by_ids(theme_ids)
@@ -386,9 +403,7 @@ class HackathonService:
         ]
         return enriched
 
-    def enrich_hackathon_for_submission_summary(
-        self, hackathon: dict[str, Any]
-    ) -> dict[str, Any]:
+    def enrich_hackathon_for_submission_summary(self, hackathon: dict[str, Any]) -> dict[str, Any]:
         """
         Lightweight enrich for Submissions-tab hackathon rows (Phase 7).
 
@@ -396,14 +411,11 @@ class HackathonService:
         resolving the full themes list.
         """
         enriched = dict(hackathon)
-        banner_path = enriched.get("banner_path")
-        if banner_path:
-            enriched["banner_url"] = generate_signed_url(
-                self._get_storage_client(),
-                banner_path,
-            )
-        else:
-            enriched["banner_url"] = None
+        self.attach_banner_url(
+            enriched,
+            collection=self.collection,
+            document_id=str(enriched.get("id") or "") or None,
+        )
         enriched.setdefault("auto_ai_evaluation", False)
         return enriched
 
@@ -415,16 +427,119 @@ class HackathonService:
         theme_ids = hackathon.get("theme_ids") or []
         return self.theme_service.get_themes_by_ids(theme_ids)
 
+    def attach_banner_url(
+        self,
+        data: dict[str, Any],
+        *,
+        collection: str | None,
+        document_id: str | None,
+    ) -> str | None:
+        """
+        Set ``banner_url`` from a stored signature when it is still fresh.
+
+        A miss signs once, stores the URL on the document, and is then reused
+        by admin lists, the public catalog, and submission cards.
+        """
+        banner_path = data.get("banner_path")
+        if not banner_path:
+            data["banner_url"] = None
+            return None
+
+        cached = data.get("banner_signed_url")
+        if cached and banner_signed_url_is_fresh(data.get("banner_signed_url_expires_at")):
+            data["banner_url"] = cached
+            return cached
+
+        signed = sign_banner_url(self._get_storage_client(), banner_path)
+        if not signed:
+            data["banner_url"] = None
+            return None
+
+        url, expires_at = signed
+        data["banner_url"] = url
+        data["banner_signed_url"] = url
+        data["banner_signed_url_expires_at"] = expires_at
+        self._persist_signed_banner(collection, document_id, url, expires_at)
+        return url
+
+    def _prime_banner_urls(self, hackathons: list[dict[str, Any]]) -> None:
+        """Sign cache misses in parallel so a cold list does not sign serially."""
+        pending: list[dict[str, Any]] = []
+        for item in hackathons:
+            if not item.get("banner_path"):
+                item["banner_url"] = None
+                continue
+            cached = item.get("banner_signed_url")
+            if cached and banner_signed_url_is_fresh(item.get("banner_signed_url_expires_at")):
+                item["banner_url"] = cached
+                continue
+            pending.append(item)
+        if not pending:
+            return
+
+        def _sign(item: dict[str, Any]) -> None:
+            try:
+                self.attach_banner_url(
+                    item,
+                    collection=self.collection,
+                    document_id=str(item.get("id") or "") or None,
+                )
+            except Exception:
+                logger.warning("Banner URL failed for hackathon %s", item.get("id"))
+                item["banner_url"] = None
+
+        if len(pending) == 1:
+            _sign(pending[0])
+            return
+        workers = min(8, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(_sign, pending))
+
+    def _persist_signed_banner(
+        self,
+        collection: str | None,
+        document_id: str | None,
+        url: str,
+        expires_at: str,
+    ) -> None:
+        firebase = getattr(self, "firebase", None)
+        if firebase is None or not collection or not document_id:
+            return
+        try:
+            firebase.update_document(
+                collection,
+                document_id,
+                {
+                    "banner_signed_url": url,
+                    "banner_signed_url_expires_at": expires_at,
+                },
+            )
+        except Exception:
+            logger.warning("Could not store banner URL for %s/%s", collection, document_id)
+
+    def _delete_banner_object(self, banner_path: str | None) -> None:
+        if not banner_path or not self.bucket_name:
+            return
+        try:
+            bucket_name, object_name = parse_gs_uri(banner_path)
+            if bucket_name != self.bucket_name:
+                return
+            self._get_storage_client().bucket(bucket_name).blob(object_name).delete()
+        except Exception:
+            logger.warning("Could not delete replaced banner %s", banner_path)
+
     def _upload_banner(self, hackathon_id: str, banner: tuple[str, bytes, str]) -> str:
         self._validate_configuration()
         filename, payload, content_type = banner
-        resolved_type, extension = resolve_image_content_type(
+        resolved_type, _extension = resolve_image_content_type(
             content_type,
             filename,
             payload,
         )
-        object_name = f"hackathons/{hackathon_id}/banner{extension}"
+        payload, resolved_type, extension = prepare_card_banner(payload, resolved_type)
+        object_name = f"hackathons/{hackathon_id}/banners/{uuid.uuid4().hex}{extension}"
         blob = self._get_storage_client().bucket(self.bucket_name).blob(object_name)
+        blob.cache_control = BANNER_CACHE_CONTROL
         blob.upload_from_string(payload, content_type=resolved_type)
         return f"gs://{self.bucket_name}/{object_name}"
 
@@ -451,16 +566,10 @@ class HackathonService:
 
     @staticmethod
     def _normalize_max_team_size(value: Any) -> int:
-        try:
-            size = int(value)
-        except (TypeError, ValueError):
-            size = 1
-        return max(1, min(4, size))
+        return normalize_max_team_size(value)
 
     @staticmethod
-    def _normalize_round_for_storage(
-        round_: dict[str, Any], *, published: bool
-    ) -> dict[str, Any]:
+    def _normalize_round_for_storage(round_: dict[str, Any], *, published: bool) -> dict[str, Any]:
         data = dict(round_)
         data["published"] = published
         if not published:

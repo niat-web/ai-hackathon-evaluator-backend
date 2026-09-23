@@ -1,5 +1,5 @@
 """
-Per-round team enrollment (solo or 2–4 member teams with join codes).
+Per-round team enrollment (solo or 2–5 member teams with join codes).
 
 Collections:
 - ``hackathon_teams`` — team roster for a hackathon round
@@ -27,16 +27,17 @@ from app.models.user_model import CurrentUser
 from app.services.firebase import FirebaseService
 from app.services.hackathon_service import HackathonService
 from app.services.submission.uniqueness import (
-    ALREADY_SUBMITTED_MESSAGE,
-    TEAM_ALREADY_SUBMITTED_MESSAGE,
-    assert_no_existing_round_submission,
-    find_existing_round_submission,
+    SUBMISSION_LIMIT_MESSAGE,
+    TEAM_SUBMISSION_LIMIT_MESSAGE,
+    assert_within_submission_limit,
+    list_round_submissions,
 )
 from app.services.user_service import UserService
 from app.utils.hackathon_round import (
     TEAM_INCOMPLETE_MESSAGE,
     TEAM_MODE_LABELS,
     get_timeline_round,
+    hackathon_max_submissions,
     normalize_max_team_size,
     parse_iso_date,
     round_auto_ai_evaluation,
@@ -71,9 +72,7 @@ class TeamService:
         now_fn: Callable[[], datetime] | None = None,
     ):
         self.firebase = firebase or FirebaseService()
-        self.hackathon_service = hackathon_service or HackathonService(
-            firebase=self.firebase
-        )
+        self.hackathon_service = hackathon_service or HackathonService(firebase=self.firebase)
         self.user_service = user_service or UserService(firebase=self.firebase)
         self._now = now_fn or now_ist
 
@@ -108,12 +107,7 @@ class TeamService:
                     )
             if role == "member":
                 pending = None
-            elif (
-                role == "leader"
-                and max_size > 1
-                and team
-                and not team.is_full
-            ):
+            elif role == "leader" and max_size > 1 and team and not team.is_full:
                 pending = "complete_team"
                 block_reason = TEAM_INCOMPLETE_MESSAGE
             elif not round_open:
@@ -136,23 +130,27 @@ class TeamService:
         else:
             pending = "choose_role"
 
-        existing = find_existing_round_submission(
+        submissions = list_round_submissions(
             self.firebase,
             student_id=user.user_id,
             hackathon_id=hackathon_id,
             round_index=round_index,
             team_id=(team.id if team else None),
         )
-        already_submitted = existing is not None
-        existing_submission_id = (existing or {}).get("id") if existing else None
-        if already_submitted:
+        submission_limit = hackathon_max_submissions(hackathon)
+        submission_count = len(submissions)
+        submissions_remaining = max(0, submission_limit - submission_count)
+        already_submitted = submission_count > 0
+        existing_submission_id = submissions[-1]["id"] if submissions else None
+        if submission_count >= submission_limit:
             can_submit = False
             can_continue_to_demo = False
             pending = "already_submitted"
-            if team and (existing or {}).get("student_id") != user.user_id:
-                block_reason = TEAM_ALREADY_SUBMITTED_MESSAGE
+            latest = submissions[-1]
+            if team and latest.get("student_id") != user.user_id:
+                block_reason = TEAM_SUBMISSION_LIMIT_MESSAGE
             else:
-                block_reason = ALREADY_SUBMITTED_MESSAGE
+                block_reason = SUBMISSION_LIMIT_MESSAGE
 
         return HackathonParticipationResponse(
             hackathon_id=hackathon_id,
@@ -160,9 +158,7 @@ class TeamService:
             round_title=round_title,
             max_team_size=max_size,
             team_mode_label=TEAM_MODE_LABELS.get(max_size, f"{max_size} Members"),
-            working_demo_video_required=round_working_demo_video_required(
-                hackathon, round_index
-            ),
+            working_demo_video_required=round_working_demo_video_required(hackathon, round_index),
             auto_ai_evaluation=round_auto_ai_evaluation(hackathon, round_index),
             github_ai_evaluation=round_github_ai_evaluation(hackathon, round_index),
             round_published=round_is_published(round_),
@@ -177,6 +173,9 @@ class TeamService:
             pending_action=pending,
             already_submitted=already_submitted,
             existing_submission_id=existing_submission_id,
+            max_submissions=submission_limit,
+            submission_count=submission_count,
+            submissions_remaining=submissions_remaining,
         )
 
     def _assert_round_visible_to_student(
@@ -191,9 +190,7 @@ class TeamService:
                 code="ROUND_NOT_PUBLISHED",
             )
 
-    def _assert_round_accepts_enrollment(
-        self, hackathon: dict[str, Any], round_index: int
-    ) -> None:
+    def _assert_round_accepts_enrollment(self, hackathon: dict[str, Any], round_index: int) -> None:
         round_ = get_timeline_round(hackathon, round_index)
         if not round_:
             raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
@@ -330,9 +327,7 @@ class TeamService:
                 "created_at": now,
             },
         )
-        code, join_meta = self._issue_join_code(
-            hackathon_id, round_index, team_id, user.user_id
-        )
+        code, join_meta = self._issue_join_code(hackathon_id, round_index, team_id, user.user_id)
         return CreateTeamResponse(
             team=self._team_response(
                 team_id,
@@ -442,9 +437,7 @@ class TeamService:
         team_id = enrollment.get("team_id")
         if not team_id:
             raise NotFoundError("Team not found", code="TEAM_NOT_FOUND")
-        code, join_meta = self._issue_join_code(
-            hackathon_id, round_index, team_id, user.user_id
-        )
+        code, join_meta = self._issue_join_code(hackathon_id, round_index, team_id, user.user_id)
         return TeamJoinCodeResponse(
             code=code,
             expires_at=join_meta["expires_at"],
@@ -478,11 +471,12 @@ class TeamService:
                 )
             profile = self.user_service.get_user(student_id) or {}
             name = (profile.get("name") or profile.get("email") or "Solo").strip()
-            assert_no_existing_round_submission(
+            assert_within_submission_limit(
                 self.firebase,
                 student_id=student_id,
                 hackathon_id=hackathon_id,
                 round_index=round_index,
+                max_submissions=hackathon_max_submissions(hackathon),
             )
             return f"{name} (Solo)", None
 
@@ -504,12 +498,13 @@ class TeamService:
         max_members = int(team_doc.get("max_members") or max_size)
         if len(members) < max_members:
             raise ForbiddenError(TEAM_INCOMPLETE_MESSAGE, code="TEAM_INCOMPLETE")
-        assert_no_existing_round_submission(
+        assert_within_submission_limit(
             self.firebase,
             student_id=student_id,
             hackathon_id=hackathon_id,
             round_index=round_index,
             team_id=team_id,
+            max_submissions=hackathon_max_submissions(hackathon),
         )
         return str(team_doc.get("team_name") or "Team"), team_id
 
@@ -543,9 +538,7 @@ class TeamService:
             "expires_in_seconds": int(JOIN_CODE_TTL.total_seconds()),
         }
 
-    def _revoke_team_join_codes(
-        self, hackathon_id: str, round_index: int, team_id: str
-    ) -> None:
+    def _revoke_team_join_codes(self, hackathon_id: str, round_index: int, team_id: str) -> None:
         docs = self.firebase.query_collection(JOIN_CODES, "team_id", "==", team_id)
         for doc in docs:
             doc_id = doc.get("id")

@@ -195,6 +195,7 @@ def test_student_complete_rejects_evaluator_session():
                 first_name="Ada",
                 last_name="Lovelace",
                 email="ada@nxtwave.co.in",
+                university_id="uni-niat",
                 university_name="NIAT",
                 niat_id="N123",
                 mobile_number="+919876543210",

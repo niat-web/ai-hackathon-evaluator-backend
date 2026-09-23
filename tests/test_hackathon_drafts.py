@@ -55,6 +55,13 @@ class FakeHackathonService:
     def _upload_banner(self, hackathon_id, banner):
         return f"gs://bucket/hackathons/{hackathon_id}/banner.png"
 
+    def _delete_banner_object(self, banner_path):
+        return None
+
+    def attach_banner_url(self, data, *, collection, document_id):
+        data["banner_url"] = None
+        return None
+
 
 def _service() -> HackathonDraftService:
     return HackathonDraftService(

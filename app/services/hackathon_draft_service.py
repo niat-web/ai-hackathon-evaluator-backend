@@ -22,7 +22,6 @@ from app.models.hackathon_model import (
 )
 from app.services.firebase import FirebaseService
 from app.services.hackathon_service import HackathonService
-from app.utils.gcs_video import generate_signed_url
 from app.utils.time import now_ist_iso
 
 
@@ -38,9 +37,7 @@ class HackathonDraftService:
         hackathon_service: HackathonService | None = None,
     ):
         self.firebase = firebase or FirebaseService()
-        self.hackathon_service = hackathon_service or HackathonService(
-            firebase=self.firebase
-        )
+        self.hackathon_service = hackathon_service or HackathonService(firebase=self.firebase)
 
     def create_draft(
         self,
@@ -95,7 +92,11 @@ class HackathonDraftService:
 
         update = self._extract_updates(request)
         if banner is not None:
+            previous = existing.get("banner_path")
             update["banner_path"] = self._upload_draft_banner(draft_id, banner)
+            update["banner_signed_url"] = None
+            update["banner_signed_url_expires_at"] = None
+            self.hackathon_service._delete_banner_object(previous)
 
         if update:
             update["updated_at"] = now_ist_iso()
@@ -224,14 +225,10 @@ class HackathonDraftService:
         except (ValidationError, ValueError, TypeError) as exc:
             raise BadRequestError(str(exc), code="DRAFT_INVALID") from exc
 
-    def _upload_draft_banner(
-        self, draft_id: str, banner: tuple[str, bytes, str]
-    ) -> str:
+    def _upload_draft_banner(self, draft_id: str, banner: tuple[str, bytes, str]) -> str:
         return self.hackathon_service._upload_banner(f"drafts/{draft_id}", banner)
 
-    def _read_banner_bytes(
-        self, banner_path: str | None
-    ) -> tuple[str, bytes, str] | None:
+    def _read_banner_bytes(self, banner_path: str | None) -> tuple[str, bytes, str] | None:
         if not banner_path:
             return None
         client = self.hackathon_service._get_storage_client()
@@ -255,16 +252,13 @@ class HackathonDraftService:
         data.setdefault("theme_ids", [])
         data.setdefault("timeline", [])
 
-        banner_path = data.get("banner_path")
-        if banner_path:
-            try:
-                data["banner_url"] = generate_signed_url(
-                    self.hackathon_service._get_storage_client(),
-                    banner_path,
-                )
-            except Exception:
-                logger.warning("Could not sign draft banner url draft_id=%s", draft_id)
-                data["banner_url"] = None
-        else:
+        try:
+            self.hackathon_service.attach_banner_url(
+                data,
+                collection=self.collection,
+                document_id=draft_id,
+            )
+        except Exception:
+            logger.warning("Could not sign draft banner url draft_id=%s", draft_id)
             data["banner_url"] = None
         return data

@@ -76,9 +76,7 @@ def test_signed_video_url_can_check_exists():
     client.bucket.return_value.blob.return_value = blob
     blob.exists.return_value = False
 
-    url = generate_signed_video_url(
-        client, "gs://bucket/path/video.webm", check_exists=True
-    )
+    url = generate_signed_video_url(client, "gs://bucket/path/video.webm", check_exists=True)
     assert url is None
     blob.exists.assert_called_once()
 
@@ -211,8 +209,8 @@ def test_hackathon_summary_enrich_does_not_load_themes():
         svc._get_storage_client = MagicMock(return_value=MagicMock())
 
         with patch(
-            "app.services.hackathon_service.generate_signed_url",
-            return_value="https://banner",
+            "app.services.hackathon_service.sign_banner_url",
+            return_value=("https://banner", "2099-01-01T00:00:00+05:30"),
         ):
             out = svc.enrich_hackathon_for_submission_summary(
                 {

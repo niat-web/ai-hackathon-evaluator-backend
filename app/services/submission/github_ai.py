@@ -55,9 +55,7 @@ class GithubAiMixin:
             problem = (submission.get("problem_statement") or "").strip()
             solution = (submission.get("solution_description") or "").strip()
             if not problem or not solution:
-                raise ValueError(
-                    "Submission is missing problem statement or solution description"
-                )
+                raise ValueError("Submission is missing problem statement or solution description")
 
             context = service.generate_evaluation_context(
                 problem_statement=problem,
@@ -98,6 +96,7 @@ class GithubAiMixin:
             analyzed_at = now_ist_iso()
             github_ai_result = {
                 "github_url": github_url,
+                "job_id": str(external.get("job_id") or ""),
                 "context": context,
                 "score": normalized["score"],
                 "max_score": max_score,

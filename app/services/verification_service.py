@@ -37,6 +37,7 @@ from app.models.verification_model import (
 from app.services.email_service import EmailService, get_email_service
 from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
+from app.services.university_service import UniversityService
 from app.services.user_service import UserService
 from app.utils.otp import generate_otp, hash_otp, otp_matches
 from app.utils.phone import normalize_e164
@@ -89,12 +90,14 @@ class VerificationService:
         self,
         firebase: FirebaseService | None = None,
         user_service: UserService | None = None,
+        university_service: UniversityService | None = None,
         email_service: EmailService | None = None,
         now_fn: Callable[[], datetime] | None = None,
         generate_otp_fn: Callable[[], str] | None = None,
     ):
         self.firebase = firebase or FirebaseService()
         self.user_service = user_service or UserService(firebase=self.firebase)
+        self.university_service = university_service or UniversityService(firebase=self.firebase)
         self.email_service = email_service or get_email_service(firebase=self.firebase)
         self._now = now_fn or now_ist
         self._generate_otp = generate_otp_fn or generate_otp
@@ -160,8 +163,7 @@ class VerificationService:
             "mobile_last4": last4,
             "mobile_number": phone,
             "message": (
-                "Verification code sent to your email and registered mobile "
-                f"ending in {last4}"
+                "Verification code sent to your email and registered mobile " f"ending in {last4}"
             ),
         }
 
@@ -398,9 +400,7 @@ class VerificationService:
             return
 
         try:
-            decoded = self.firebase.verify_id_token(
-                request.firebase_id_token, check_revoked=False
-            )
+            decoded = self.firebase.verify_id_token(request.firebase_id_token, check_revoked=False)
         except ValueError as exc:
             raise BadRequestError(str(exc), code="INVALID_TOKEN") from exc
 
@@ -431,9 +431,7 @@ class VerificationService:
             try:
                 self.firebase.delete_user(str(temp_uid))
             except Exception:
-                logger.warning(
-                    "Could not delete temporary Phone Auth user uid=%s", temp_uid
-                )
+                logger.warning("Could not delete temporary Phone Auth user uid=%s", temp_uid)
 
         self.firebase.update_document(
             SESSIONS,
@@ -459,14 +457,11 @@ class VerificationService:
         if self.user_service.find_by_field("niat_id", request.niat_id):
             raise ConflictError("NIAT ID is already registered", code="NIAT_ID_TAKEN")
 
+        university = self.university_service.require_university(request.university_id)
         display_name = f"{request.first_name} {request.last_name}".strip()
-        registration = RegistrationService(
-            firebase=self.firebase, user_service=self.user_service
-        )
+        registration = RegistrationService(firebase=self.firebase, user_service=self.user_service)
         registration._ensure_email_available(request.email)
-        user_id = registration._create_auth_user(
-            request.email, request.password, display_name
-        )
+        user_id = registration._create_auth_user(request.email, request.password, display_name)
         now = now_ist_iso()
         try:
             self.firebase.set_document(
@@ -477,7 +472,9 @@ class VerificationService:
                     "last_name": request.last_name,
                     "name": display_name,
                     "email": request.email,
-                    "university": request.university_name,
+                    "university": university["name"],
+                    "university_id": university["id"],
+                    "university_location": university["location"],
                     "niat_id": request.niat_id,
                     "mobile_no": request.mobile_number,
                     "role": "student",
@@ -520,13 +517,9 @@ class VerificationService:
             raise ConflictError("Employee ID is already registered", code="EMPLOYEE_ID_TAKEN")
 
         display_name = f"{request.first_name} {request.last_name}".strip()
-        registration = RegistrationService(
-            firebase=self.firebase, user_service=self.user_service
-        )
+        registration = RegistrationService(firebase=self.firebase, user_service=self.user_service)
         registration._ensure_email_available(request.email)
-        user_id = registration._create_auth_user(
-            request.email, request.password, display_name
-        )
+        user_id = registration._create_auth_user(request.email, request.password, display_name)
         now = now_ist_iso()
         try:
             self.firebase.set_document(
@@ -604,11 +597,7 @@ class VerificationService:
             candidates.add(normalize_e164(stored))
         except ValueError:
             candidates.add(stored)
-        national = (
-            submitted[3:]
-            if submitted.startswith("+91") and len(submitted) == 13
-            else ""
-        )
+        national = submitted[3:] if submitted.startswith("+91") and len(submitted) == 13 else ""
         if national:
             candidates.add(national)
         return stored in candidates or stored.replace(" ", "") in candidates
@@ -628,9 +617,7 @@ class VerificationService:
             )
         return session_email, session_phone
 
-    def _assert_identifiers_available(
-        self, email: str | None, phone: str | None
-    ) -> None:
+    def _assert_identifiers_available(self, email: str | None, phone: str | None) -> None:
         if email and self.user_service.user_exists(email):
             raise ConflictError(
                 "An account with this email already exists",
@@ -659,9 +646,7 @@ class VerificationService:
             raise BadRequestError("Verification session has expired", code="SESSION_EXPIRED")
         return doc
 
-    def _enforce_rate_limit(
-        self, kind: str, identifier: str, *, max_events: int
-    ) -> None:
+    def _enforce_rate_limit(self, kind: str, identifier: str, *, max_events: int) -> None:
         if max_events <= 0:
             return
         cleaned = (identifier or "").strip()

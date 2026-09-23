@@ -5,6 +5,7 @@ import pytest
 from app.exceptions import ConflictError
 from app.services.submission.uniqueness import (
     assert_no_existing_round_submission,
+    assert_within_submission_limit,
     find_existing_round_submission,
 )
 
@@ -80,7 +81,7 @@ def test_assert_blocks_duplicate_and_allows_other_round():
             hackathon_id="hack-1",
             round_index=0,
         )
-    assert exc.value.code == "ALREADY_SUBMITTED"
+    assert exc.value.code == "SUBMISSION_LIMIT_REACHED"
     assert_no_existing_round_submission(
         firebase,
         student_id="stu-1",
@@ -108,4 +109,47 @@ def test_team_submission_blocks_other_member():
             round_index=0,
             team_id="team-1",
         )
-    assert exc.value.code == "ALREADY_SUBMITTED"
+    assert exc.value.code == "SUBMISSION_LIMIT_REACHED"
+
+
+def test_second_submission_allowed_until_cap():
+    firebase = FakeFirebase(
+        {
+            ("submissions", "sub-1"): {
+                "student_id": "stu-1",
+                "hackathon_id": "hack-1",
+                "round_index": 0,
+                "created_at": "2026-01-01T00:00:00+05:30",
+            }
+        }
+    )
+    assert_within_submission_limit(
+        firebase,
+        student_id="stu-1",
+        hackathon_id="hack-1",
+        round_index=0,
+        max_submissions=2,
+    )
+    firebase.store[("submissions", "sub-2")] = {
+        "student_id": "stu-1",
+        "hackathon_id": "hack-1",
+        "round_index": 0,
+        "created_at": "2026-01-02T00:00:00+05:30",
+    }
+    with pytest.raises(ConflictError) as exc:
+        assert_within_submission_limit(
+            firebase,
+            student_id="stu-1",
+            hackathon_id="hack-1",
+            round_index=0,
+            max_submissions=2,
+        )
+    assert exc.value.code == "SUBMISSION_LIMIT_REACHED"
+    latest = find_existing_round_submission(
+        firebase,
+        student_id="stu-1",
+        hackathon_id="hack-1",
+        round_index=0,
+    )
+    assert latest is not None
+    assert latest["id"] == "sub-2"

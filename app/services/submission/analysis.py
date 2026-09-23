@@ -133,7 +133,9 @@ class AnalysisMixin:
             client = self._build_genai_client()
 
             logger.info("Generating validation checklist for submission %s", submission_id)
-            checklist = self._generate_checklist(client, problem, solution)
+            checklist = self._generate_checklist(
+                client, problem, solution, hackathon_id=hackathon_id or None
+            )
 
             extra_criteria = evaluation_criteria or submission.get("evaluation_criteria")
             if extra_criteria and extra_criteria.strip():
@@ -154,10 +156,13 @@ class AnalysisMixin:
                     video_uri=video_uri,
                     content_type=content_type,
                     context=checklist,
+                    hackathon_id=hackathon_id or None,
                 )
                 video_metric = self._find_video_metric(metric_defs)
                 if video_metric:
-                    video_score = self._score_video_metric(client, video_metric, video_report)
+                    video_score = self._score_video_metric(
+                        client, video_metric, video_report, hackathon_id=hackathon_id or None
+                    )
                     field_scores.append(video_score)
             else:
                 logger.info(
@@ -294,6 +299,8 @@ class AnalysisMixin:
             raise ValueError("Submission not found")
 
         if publish:
+            if (submission.get("review_status") or "") != "approved":
+                raise ValueError("Approve the evaluation before publishing the report to students")
             if submission.get("status") != "completed":
                 raise ValueError("Report can only be published after analysis has completed")
             analysis_id = submission.get("analysis_id")
@@ -354,8 +361,11 @@ class AnalysisMixin:
         client: genai.Client,
         problem_statement: str,
         solution_description: str,
+        hackathon_id: str | None = None,
     ) -> str:
-        template = self.evaluation_prompt_service.get_template("checklist")
+        template = self.evaluation_prompt_service.get_template(
+            "checklist", hackathon_id=hackathon_id
+        )
         prompt = template.format(
             problem_statement=problem_statement.strip(),
             solution_description=solution_description.strip(),
@@ -375,9 +385,12 @@ class AnalysisMixin:
         video_uri: str,
         content_type: str,
         context: str,
+        hackathon_id: str | None = None,
     ) -> str:
         video_part = types.Part.from_uri(file_uri=video_uri, mime_type=content_type)
-        template = self.evaluation_prompt_service.get_template("analyze_video")
+        template = self.evaluation_prompt_service.get_template(
+            "analyze_video", hackathon_id=hackathon_id
+        )
         prompt = template.format(context=context)
 
         response = client.models.generate_content(
@@ -496,17 +509,20 @@ class AnalysisMixin:
         client: genai.Client,
         metric: dict[str, Any],
         video_report: str,
+        hackathon_id: str | None = None,
     ) -> dict[str, Any]:
         """
-        Score Video Explanation using the report + admin AI Prompts analyze_video.
+        Score Video Explanation using the report + analyze_video prompt.
 
-        Per-metric ``scoring_prompt`` on the scorecard is intentionally unused —
-        edit the prompt under Application → AI prompts instead.
+        Uses the hackathon Settings override when present, otherwise
+        Application → Video Analysis.
         """
         field_key = metric.get("field_key") or "video_explanation"
         field_label = metric.get("field_label") or "Video Explanation"
         max_score = float(metric.get("max_score") or 20)
-        analyze_video_prompt = self.evaluation_prompt_service.get_template("analyze_video")
+        analyze_video_prompt = self.evaluation_prompt_service.get_template(
+            "analyze_video", hackathon_id=hackathon_id
+        )
         prompt = VIDEO_SCORE_PROMPT.format(
             max_score=max_score,
             analyze_video_prompt=analyze_video_prompt.strip()[:20000],

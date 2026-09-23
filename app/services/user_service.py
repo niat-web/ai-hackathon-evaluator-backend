@@ -101,13 +101,13 @@ class UserService:
         users = self.firebase.get_collection("users")
         return [user for user in users if user.get("role") != "admin"]
 
-    def get_evaluators(self, approval_status: Optional[ApprovalStatus] = None) -> list[dict[str, Any]]:
+    def get_evaluators(
+        self, approval_status: Optional[ApprovalStatus] = None
+    ) -> list[dict[str, Any]]:
         """Get evaluator users, optionally filtered by approval status."""
         users = self.firebase.query_collection("users", "role", "==", "evaluator")
         if approval_status:
-            return [
-                user for user in users if user.get("approval_status") == approval_status
-            ]
+            return [user for user in users if user.get("approval_status") == approval_status]
         return users
 
     def approve_evaluator(self, user_id: str) -> dict[str, Any]:
@@ -173,6 +173,8 @@ class UserService:
             mobile_no=user_data.get("mobile_no"),
             team_name=user_data.get("team_name"),
             university=user_data.get("university"),
+            university_id=user_data.get("university_id"),
+            university_location=user_data.get("university_location"),
             team_leader_name=user_data.get("team_leader_name"),
             team_members=[
                 TeamMember(name=member["name"], email=member["email"])

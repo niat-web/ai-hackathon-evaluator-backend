@@ -49,40 +49,59 @@ def test_normalize_job_response_scales_total_score():
 
 def test_analyze_url_normalization():
     assert (
-        GitHubAiEvaluationService._normalize_analyze_url(
-            "https://github-analyser-835728304610.us-central1.run.app"
+        GitHubAiEvaluationService._normalize_analyzer_base(
+            "https://github-analyser-361821886421.us-central1.run.app/docs"
         )
-        == "https://github-analyser-835728304610.us-central1.run.app/analyze/sync"
+        == "https://github-analyser-361821886421.us-central1.run.app"
     )
     assert (
-        GitHubAiEvaluationService._normalize_analyze_url(
-            "https://github-analyser-835728304610.us-central1.run.app/analyze"
+        GitHubAiEvaluationService._normalize_analyzer_base(
+            "https://github-analyser-361821886421.us-central1.run.app/analyze"
         )
-        == "https://github-analyser-835728304610.us-central1.run.app/analyze/sync"
+        == "https://github-analyser-361821886421.us-central1.run.app"
+    )
+    assert (
+        GitHubAiEvaluationService._normalize_analyzer_base(
+            "https://github-analyser-361821886421.us-central1.run.app/analyze/sync"
+        )
+        == "https://github-analyser-361821886421.us-central1.run.app"
     )
 
 
 def test_default_analyze_endpoint_when_env_unset(monkeypatch):
     monkeypatch.delenv("GITHUB_AI_EVALUATION_URL", raising=False)
-    endpoint = GitHubAiEvaluationService._analyze_sync_endpoint()
-    assert endpoint.endswith("/analyze/sync")
-    assert "github-analyser" in endpoint
+    endpoint = GitHubAiEvaluationService._analyze_create_endpoint()
+    assert endpoint.endswith("/analyze")
+    assert "361821886421" in endpoint
 
 
-def test_evaluate_repository_posts_analyzer_payload(monkeypatch):
+def test_evaluate_repository_posts_then_polls_job(monkeypatch):
     monkeypatch.setenv(
         "GITHUB_AI_EVALUATION_URL",
-        "https://github-analyser.test/analyze/sync",
+        "https://github-analyser.test/docs",
     )
+    monkeypatch.setenv("GITHUB_AI_EVALUATION_WAIT_SECONDS", "120")
     session = MagicMock()
-    response = MagicMock()
-    response.raise_for_status.return_value = None
-    response.json.return_value = {
+    created = MagicMock()
+    created.raise_for_status.return_value = None
+    created.json.return_value = {
+        "job_id": "job-1",
+        "status": "queued",
+        "metrics_requested": [],
+    }
+    polled = MagicMock()
+    polled.raise_for_status.return_value = None
+    polled.json.return_value = {
         "job_id": "job-1",
         "status": "succeeded",
-        "result": {"scoring": {"total_score": 18, "max_total_score": 20}},
+        "github_url": "https://github.com/org/repo",
+        "metrics_requested": [],
+        "result": {
+            "access": {"is_public": True},
+            "scoring": {"total_score": 18},
+        },
     }
-    session.post.return_value = response
+    session.request.side_effect = [created, polled]
     svc = GitHubAiEvaluationService(http_session=session)
 
     result = svc.evaluate_repository(
@@ -93,13 +112,45 @@ def test_evaluate_repository_posts_analyzer_payload(monkeypatch):
         },
     )
     assert result["status"] == "succeeded"
-    session.post.assert_called_once()
-    call = session.post.call_args
-    assert call.args[0] == "https://github-analyser.test/analyze/sync"
-    payload = call.kwargs["json"]
+    assert result["job_id"] == "job-1"
+    assert session.request.call_count == 2
+    create_call, poll_call = session.request.call_args_list
+    assert create_call.args[0] == "POST"
+    assert create_call.args[1] == "https://github-analyser.test/analyze"
+    payload = create_call.kwargs["json"]
     assert payload["github_url"] == "https://github.com/org/repo"
     assert payload["context"]["provided_context"] == "Multi-agent study planner using Gemini."
     assert payload["context"]["rubrics"] == ["Uses an LLM", "Full-stack demo"]
+    assert poll_call.args[0] == "GET"
+    assert poll_call.args[1] == "https://github-analyser.test/analyze/job-1"
+    assert poll_call.kwargs["params"]["wait_seconds"] == 120
+
+
+def test_normalize_total_score_without_analyzer_max():
+    svc = GitHubAiEvaluationService()
+    out = svc.normalize_github_metric_result(
+        {
+            "job_id": "job-1",
+            "status": "succeeded",
+            "result": {
+                "access": {"is_public": True},
+                "ai": {"classification": "genuine_ai_integration"},
+                "architecture": {"application_type": "full_stack"},
+                "scoring": {"total_score": 16},
+            },
+        },
+        max_score=20,
+    )
+    assert out["score"] == 16
+    assert "genuine_ai_integration" in out["rationale"]
+
+
+def test_normalize_maps_hundred_point_score_onto_metric_max():
+    out = GitHubAiEvaluationService().normalize_github_metric_result(
+        {"result": {"scoring": {"total_score": 80}}},
+        max_score=20,
+    )
+    assert out["score"] == 16.0
 
 
 @patch("app.services.submission.github_ai.GitHubAiEvaluationService")

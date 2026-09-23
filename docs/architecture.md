@@ -132,6 +132,7 @@ Startup (`lifespan`):
 | `teams` | `/hackathons` | Round enrollment, create/join team, join codes |
 | `submissions` | `/submissions` | Upload, assign, evaluate, GitHub AI, review, Sheets export |
 | `theme` | `/themes` | Reusable problem themes |
+| `university` | `/universities` | Admin catalogue; public list for student register |
 | `evaluation_requirement` | `/evaluation-requirements` | Rubric / form field definitions |
 | `evaluation_prompt` | `/ai-evaluation-prompts` | Gemini prompt templates |
 | `metric_scoring` | `/ai-evaluation-metric-scoring` | Per-field scoring config |
@@ -158,6 +159,7 @@ flowchart TB
   LS[LeaderboardService]
   EJ[EvaluationJobService]
   TH[ThemeService]
+  UN[UniversityService]
   ER[EvaluationRequirementService]
   EP[EvaluationPromptService]
   MS[MetricScoringService]
@@ -168,6 +170,8 @@ flowchart TB
   VS --> FB
   VS --> US
   TH --> FB
+  UN --> FB
+  VS --> UN
   ER --> FB
   EP --> FB
   MS --> FB
@@ -256,7 +260,9 @@ Student and evaluator share the same verified-email + phone flow (`VerificationS
 1. `POST /auth/register/start` → `verification_sessions` doc
 2. Email OTP via `EmailService` (Brevo in prod)
 3. Firebase Phone Auth in the browser → `POST /auth/verify-phone-token`
-4. `POST /auth/register/complete` creates Auth + Firestore user and sets the login cookies
+4. `POST /auth/register/complete` creates Auth + Firestore user and sets the login cookies.
+   Student complete requires `university_id` from `GET /universities` (public). The user
+   doc stores `university` (name), `university_id`, and `university_location`.
 
 OTP rate limits (Firestore `otp_rate_limits`): **5 sends/hour per email**, **2000/hour per IP** (campus NAT), 60s resend cooldown. Codes are hashed (SHA-256 + pepper).
 
@@ -289,6 +295,7 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 | `submissions` | submission id | Student work, scorecard, review, GitHub AI |
 | `analysis` | submission id | Gemini video result (report, checklist, scores) |
 | `themes` | theme id | Problem catalogue |
+| `universities` | university id | Admin-created name + location for student register |
 | `evaluation_requirements` | requirement id | Rubric / form fields |
 | `ai_evaluation_prompts` | prompt key | Gemini prompt templates |
 | `ai_evaluation_metric_scoring` | scoring id | Metric scoring config |
@@ -302,7 +309,7 @@ Firestore is not schema-enforced. Pydantic models validate **API** payloads; sto
 | Object | Use |
 |--------|-----|
 | `submissions/{student_id}/{submission_id}/video.{ext}` | Demo video |
-| `hackathons/{hackathon_id}/banner…` | Banner image |
+| `hackathons/{hackathon_id}/banners/{id}.webp` | Card banner (resized WebP, `Cache-Control` ~5 days). List/catalog reuse a stored signed URL for up to ~6 days so the browser can cache it. |
 
 The API issues **signed PUT** URLs for browser upload and **signed GET** URLs (or a streaming proxy) for playback. Gemini is given the `gs://` URI — the video is not re-downloaded into Cloud Run.
 
@@ -313,7 +320,7 @@ Stored on `TimelineRound`:
 | Field | Meaning |
 |-------|---------|
 | `published` | Students can see and enroll |
-| `max_team_size` | 1 = solo, 2–4 = team |
+| `max_team_size` | 1 = solo, 2–5 = team |
 | `working_demo_video_required` | Video required vs form-only |
 | `auto_ai_evaluation` | Queue Gemini on evaluator assign |
 | `github_ai_evaluation` | Show GitHub AI button for evaluators |
@@ -331,11 +338,11 @@ Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from IST date
 Admin draft  →  POST /hackathons
              →  publish round (students can enroll)
              →  students enroll (solo or team)
-             →  one submission per student/team per round
+             →  up to max_submissions per student/team per round (default 1, max 3)
              →  admin assigns evaluator(s)
              →  optional auto Gemini + optional GitHub AI
              →  evaluator submit-for-review
-             →  admin approve (report_published + final_score)
+             →  admin approve (optional publish now / auto-publish)
              →  admin publish leaderboard (ranks + email)
 ```
 
@@ -353,7 +360,7 @@ A leftover `role: solo` enrollment on a team round blocks `choose_role` until th
 
 Enforced in `app/services/submission/uniqueness.py` on `POST /submissions` and `POST /submissions/from-upload`:
 
-- Same student + hackathon + round → `409 ALREADY_SUBMITTED`
+- Same student + hackathon + round → `409 SUBMISSION_LIMIT_REACHED` once `max_submissions` is used (default 1, max 3, set on the hackathon)
 - Same team (leader already submitted) → `409` with team message
 - Other rounds remain independent
 
@@ -389,11 +396,12 @@ Locally (`EVALUATION_JOB_MODE=auto` without queue config) the same `evaluate_sub
 ### 9.5 Scoring, review, leaderboard
 
 1. Evaluator fills the scorecard → `review_status=pending_review` and `final_score`.
-2. Admin `approve-evaluation` → `approved` + `report_published` (student can see report/score).
-3. Admin may `request-changes` back to the evaluator.
-4. Leaderboard ranks **approved** submissions by `final_score` using competition ranking (100, 90, 90, 80 → 1st, 2nd, 2nd, 4th).
-5. Students get `403 LEADERBOARD_NOT_PUBLISHED` until `POST …/leaderboard/publish`. Admins and evaluators can preview earlier.
-6. First publish emails ranked candidates (Brevo) unless `notify: false`.
+2. Admin `approve-evaluation` → `approved`. The report stays hidden unless `publish_now` is true or the hackathon `auto_publish_reports` setting is on. `POST /submissions/{id}/publish` releases one approved report later.
+3. `PUT /hackathons/{id}/report-publishing` with `auto_publish_reports: true` publishes every already-approved hidden report in the same request (Firestore batches, no Cloud Tasks) and auto-publishes later approvals.
+4. Admin may `request-changes` back to the evaluator.
+5. Leaderboard ranks **approved** submissions by `final_score` using competition ranking (100, 90, 90, 80 → 1st, 2nd, 2nd, 4th).
+6. Students get `403 LEADERBOARD_NOT_PUBLISHED` until `POST …/leaderboard/publish`. Admins and evaluators can preview earlier.
+7. First publish emails ranked candidates (Brevo) unless `notify: false`.
 
 ### 9.6 GitHub AI (optional)
 
@@ -401,8 +409,8 @@ When the round has `github_ai_evaluation` and the submission has a GitHub URL:
 
 1. Evaluator `POST /submissions/{id}/evaluate-github-ai` → `202`
 2. Gemini builds `{ provided_context, rubrics[] }` from problem/solution
-3. Backend `POST`s the analyser `/analyze/sync` (wait ~120s, timeout ~130s)
-4. Result is mapped onto the GitHub scorecard metric (`github_ai_status`)
+3. Backend `POST`s the analyser `/analyze`, then polls `GET /analyze/{job_id}` (wait up to 120s per poll)
+4. `result.scoring.total_score` is stored on the GitHub scorecard metric (`github_ai_status`)
 
 The SPA never calls the analyser. Manual GitHub scoring still works if the flag is off.
 

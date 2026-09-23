@@ -6,7 +6,7 @@ from typing import Any, Literal, Optional
 
 from app.utils.time import ISTDateTime, OptionalISTDateTime
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.analysis_model import AnalysisSummary
 from app.models.scorecard_model import ScorecardResult
@@ -23,7 +23,13 @@ GithubAiStatus = Literal["none", "processing", "completed", "failed"]
 class GithubAiEvaluationResult(BaseModel):
     """Stored result from the external GitHub AI analyzer."""
 
+    model_config = ConfigDict(extra="allow")
+
     github_url: str
+    job_id: Optional[str] = Field(
+        None,
+        description="Analyzer job id from POST /analyze.",
+    )
     context: dict[str, Any] = Field(
         default_factory=dict,
         description="Analyzer SubmissionContext: provided_context + rubrics.",
@@ -140,7 +146,8 @@ class SubmissionResponse(BaseModel):
         False,
         description=(
             "When true, students may view the evaluation report and final score. "
-            "Set automatically when an admin approves the evaluation."
+            "Approval alone does not set this. It is set by Publish now, "
+            "or automatically when the hackathon's auto-publish setting is on."
         ),
     )
     published_at: OptionalISTDateTime = None
@@ -429,7 +436,7 @@ class SubmitForReviewRequest(BaseModel):
 
 
 class ApproveEvaluationRequest(BaseModel):
-    """Admin approves an evaluator's submitted evaluation (publishes to student)."""
+    """Admin approves an evaluator's submitted evaluation."""
 
     final_score: Optional[float] = Field(
         None,
@@ -441,6 +448,13 @@ class ApproveEvaluationRequest(BaseModel):
         None,
         max_length=5000,
         description="Optional admin notes.",
+    )
+    publish_now: bool = Field(
+        False,
+        description=(
+            "When true, approve and publish this report to the student in one step. "
+            "When false, only mark it approved unless the hackathon auto-publishes."
+        ),
     )
 
     @field_validator("review_notes", mode="before")

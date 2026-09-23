@@ -10,7 +10,7 @@ substitutions:
   _SMTP_HOST: 'smtp-relay.brevo.com'
   _SMTP_PORT: '587'
   _SMTP_FROM: 'noreply@mail.nxtlab.tech'
-  _GITHUB_AI_EVALUATION_URL: 'https://github-analyser-835728304610.us-central1.run.app/analyze/sync'
+  _GITHUB_AI_EVALUATION_URL: 'https://github-analyser-361821886421.us-central1.run.app'
   _GITHUB_AI_EVALUATION_WAIT_SECONDS: '120'
   _GITHUB_AI_EVALUATION_TIMEOUT_SECONDS: '130'
   # Email OTP: high per-IP cap so campus NAT can register; per-email stays 5/hour.

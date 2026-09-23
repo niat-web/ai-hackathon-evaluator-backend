@@ -35,6 +35,7 @@ WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "hackathons",
     "hackathon_drafts",
     "themes",
+    "universities",
     "evaluation_requirements",
     "ai_evaluation_metric_scoring",
     "ai_evaluation_prompts",
@@ -83,9 +84,7 @@ class AppSettingsService:
             wipeable.append(f"gcs objects in gs://{bucket}")
         return {
             "profile_password_configured": bool(doc.get("profile_password_hash")),
-            "default_profile_password_hint": (
-                DEFAULT_PROFILE_PASSWORD if is_default else None
-            ),
+            "default_profile_password_hint": (DEFAULT_PROFILE_PASSWORD if is_default else None),
             "wipeable_collections": wipeable,
             "evaluation_bucket_name": bucket,
             "reset_confirm_phrase": RESET_CONFIRM_PHRASE,
@@ -196,13 +195,9 @@ class AppSettingsService:
         preserve_auth_uids.add(preserve_user_id)
 
         non_admin_ids = [
-            u["id"]
-            for u in users
-            if u.get("id") and u["id"] not in preserve_auth_uids
+            u["id"] for u in users if u.get("id") and u["id"] not in preserve_auth_uids
         ]
-        deleted_counts["users_non_admin"] = self.firebase.delete_documents(
-            "users", non_admin_ids
-        )
+        deleted_counts["users_non_admin"] = self.firebase.delete_documents("users", non_admin_ids)
 
         # Wipe Firebase Auth for everyone except preserved admins — including
         # Auth-only orphans left from earlier resets (no Firestore doc).
@@ -230,9 +225,7 @@ class AppSettingsService:
 
         # Wipe submission videos + hackathon banners from the evaluation bucket.
         bucket_name = resolve_evaluation_bucket_name()
-        deleted_counts["gcs_evaluation_bucket"] = self._wipe_evaluation_bucket(
-            bucket_name
-        )
+        deleted_counts["gcs_evaluation_bucket"] = self._wipe_evaluation_bucket(bucket_name)
 
         # Do not re-seed AI prompts here — reset should leave
         # ``ai_evaluation_prompts`` empty. Evaluation falls back to in-code
@@ -275,9 +268,7 @@ class AppSettingsService:
             return 0
         try:
             client = self.storage_client or build_storage_client(
-                os.getenv("GOOGLE_CLOUD_PROJECT")
-                or os.getenv("FIREBASE_PROJECT_ID")
-                or None
+                os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID") or None
             )
             return wipe_bucket_objects(client, bucket_name)
         except Exception as exc:

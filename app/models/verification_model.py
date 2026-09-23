@@ -29,9 +29,7 @@ def validate_password_strength(password: str) -> str:
 def validate_nxtwave_email(email: str) -> str:
     normalized = email.lower()
     if not normalized.endswith(NXTWAVE_EMAIL_DOMAIN):
-        raise ValueError(
-            f"Evaluator email must be a Nxtwave address ({NXTWAVE_EMAIL_DOMAIN})"
-        )
+        raise ValueError(f"Evaluator email must be a Nxtwave address ({NXTWAVE_EMAIL_DOMAIN})")
     return normalized
 
 
@@ -128,7 +126,18 @@ class RegisterCompleteRequest(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
     email: EmailStr
-    university_name: str = Field(..., min_length=1, max_length=200)
+    university_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Id from GET /universities (admin-created catalogue)",
+    )
+    university_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=200,
+        description="Ignored; name is taken from the selected university",
+    )
     niat_id: str = Field(..., min_length=1, max_length=50)
     mobile_number: str = Field(..., min_length=8, max_length=20)
     password: str = Field(..., min_length=8, max_length=128)
@@ -138,7 +147,7 @@ class RegisterCompleteRequest(BaseModel):
         "session_id",
         "first_name",
         "last_name",
-        "university_name",
+        "university_id",
         "niat_id",
         mode="before",
     )
@@ -223,8 +232,7 @@ class ForgotPasswordStartResponse(BaseModel):
     mobile_number: str = Field(
         ...,
         description=(
-            "Registered E.164 mobile for Firebase Phone Auth. "
-            "Show only mobile_last4 in the UI."
+            "Registered E.164 mobile for Firebase Phone Auth. " "Show only mobile_last4 in the UI."
         ),
     )
 
