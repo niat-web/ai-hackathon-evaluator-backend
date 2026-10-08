@@ -9,7 +9,7 @@ substitutions:
   # Brevo SMTP (non-secret). SMTP_USERNAME + SMTP_PASSWORD come from Secret Manager.
   _SMTP_HOST: 'smtp-relay.brevo.com'
   _SMTP_PORT: '587'
-  _SMTP_FROM: 'noreply@mail.nxtlab.tech'
+  _SMTP_FROM: 'noreply@mail.challazo.nxtlab.tech'
   _GITHUB_AI_EVALUATION_URL: 'https://github-analyser-361821886421.us-central1.run.app'
   _GITHUB_AI_EVALUATION_WAIT_SECONDS: '120'
   _GITHUB_AI_EVALUATION_TIMEOUT_SECONDS: '130'
