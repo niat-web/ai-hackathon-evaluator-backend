@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.exceptions import AppError, http_exception_from_value_error
 from app.dependencies import get_user_service
 from app.middleware.auth_middleware import get_admin_user
-from app.models.user_model import CurrentUser, UserResponse, UserUpdate
+from app.models.user_model import CurrentUser, PaginatedUsersResponse, UserResponse, UserUpdate
 from app.services.user_service import UserService
 from app.utils.async_io import run_sync
 
@@ -19,17 +19,58 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.get("/users", status_code=200)
+@router.get("/users", status_code=200, response_model=PaginatedUsersResponse | list[UserResponse])
 async def get_users(
+    page: Optional[int] = Query(
+        None,
+        ge=1,
+        description="1-based page. When set, the response is one page instead of the full list.",
+    ),
+    page_size: int = Query(
+        15,
+        ge=1,
+        le=100,
+        description="Rows in the page. Student Management uses 15. Maximum 100.",
+    ),
+    role: Optional[str] = Query(
+        None,
+        description="student or evaluator. Omit to include both. Student Management sends student.",
+    ),
+    q: Optional[str] = Query(
+        None,
+        max_length=200,
+        description="Case-insensitive match on name, email, niat id, employee id, or user id.",
+    ),
     admin: CurrentUser = Depends(get_admin_user),
     user_service: UserService = Depends(get_user_service),
-) -> list[UserResponse]:
+) -> PaginatedUsersResponse | list[UserResponse]:
     """
-    Get all non-admin users.
+    Non-admin users.
+
+    Without ``page``, returns every student and evaluator as a JSON array
+    (dashboard counts). With ``page``, returns ``{ items, total, page, page_size }``.
     """
+    _ = admin
     try:
-        users = await run_sync(user_service.get_non_admin_users)
-        return [user_service.to_user_response(user["id"], user) for user in users]
+        if page is None:
+            users = await run_sync(user_service.get_non_admin_users)
+            return [user_service.to_user_response(user["id"], user) for user in users]
+
+        payload = await run_sync(
+            user_service.paginate_users,
+            page=page,
+            page_size=page_size,
+            role=role.strip().lower() if role else None,
+            q=q,
+        )
+        return PaginatedUsersResponse(
+            items=[user_service.to_user_response(user["id"], user) for user in payload["items"]],
+            total=payload["total"],
+            page=payload["page"],
+            page_size=payload["page_size"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except AppError:
         raise
     except Exception as e:

@@ -9,6 +9,7 @@ from app.services.submission.create import CreateMixin
 from app.services.submission.github_ai import GithubAiMixin
 from app.services.submission.query import QueryMixin
 from app.services.submission.review import ReviewMixin
+from app.services.submission.withdraw import WithdrawMixin
 
 
 class SubmissionService(
@@ -17,6 +18,7 @@ class SubmissionService(
     GithubAiMixin,
     AssignmentMixin,
     ReviewMixin,
+    WithdrawMixin,
     QueryMixin,
     SubmissionServiceBase,
 ):

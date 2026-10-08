@@ -67,6 +67,40 @@ class HackathonSubmissionSummary(BaseModel):
     )
 
 
+class SubmissionRoundSummary(BaseModel):
+    """Submission totals for one timeline round, ignoring the table filters."""
+
+    round_index: int = Field(..., ge=0)
+    total: int = Field(..., ge=0)
+    evaluated: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Rows the admin queue counts as evaluated: report published, "
+            "a final score is set, or AI status is completed."
+        ),
+    )
+
+
+class PaginatedSubmissionsResponse(BaseModel):
+    """One page of the admin hackathon submissions table."""
+
+    items: list["SubmissionResponse"]
+    total: int = Field(
+        ...,
+        ge=0,
+        description="How many submissions match the current round, status, and search.",
+    )
+    page: int = Field(..., ge=1)
+    page_size: int = Field(..., ge=1, le=100)
+    round_summary: list[SubmissionRoundSummary] = Field(
+        default_factory=list,
+        description=(
+            "Per-round totals for the round cards and header. " "Not affected by status or search."
+        ),
+    )
+
+
 class AcceptedVideoTypesResponse(BaseModel):
     """Constraints for Record demo vs Upload from disk pickers."""
 
@@ -487,6 +521,13 @@ class PublishReportRequest(BaseModel):
     )
 
 
+class WithdrawSubmissionResponse(BaseModel):
+    """Admin removed one submission so the student or team can submit again."""
+
+    id: str
+    withdrawn: bool = True
+
+
 class AssignEvaluatorRequest(BaseModel):
     """Assign (or clear) a single submission's evaluator."""
 
@@ -507,8 +548,8 @@ class DivideEquallyRequest(BaseModel):
     evaluator_ids: Optional[list[str]] = Field(
         None,
         description=(
-            "Optional subset of approved evaluator ids. "
-            "If omitted, all approved (active) evaluators are used."
+            "Optional subset of this hackathon's assigned evaluators. "
+            "If omitted, every evaluator on the hackathon roster is used."
         ),
     )
 
@@ -675,3 +716,6 @@ class CreateSubmissionFromUploadRequest(BaseModel):
     @classmethod
     def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
         return strip_optional(value)
+
+
+PaginatedSubmissionsResponse.model_rebuild()

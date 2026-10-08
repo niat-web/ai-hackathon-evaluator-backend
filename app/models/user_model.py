@@ -204,6 +204,19 @@ class UserResponse(BaseModel):
     updated_at: OptionalISTDateTime = None
 
 
+class PaginatedUsersResponse(BaseModel):
+    """One page of Student Management (or another role filter on GET /admin/users)."""
+
+    items: list[UserResponse]
+    total: int = Field(
+        ...,
+        ge=0,
+        description="How many users match the role and search, across every page.",
+    )
+    page: int = Field(..., ge=1)
+    page_size: int = Field(..., ge=1, le=100)
+
+
 class RegisterResponse(BaseModel):
     """Schema for registration response"""
 

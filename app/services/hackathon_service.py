@@ -17,6 +17,7 @@ from app.models.hackathon_model import HackathonCreateRequest, HackathonUpdateRe
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
 from app.services.theme_service import ThemeService
+from app.services.user_service import UserService
 from app.utils.banner_cache import (
     BANNER_CACHE_CONTROL,
     banner_signed_url_is_fresh,
@@ -102,6 +103,8 @@ class HackathonService:
             "created_by": created_by,
             "created_at": now,
             "updated_at": now,
+            # Snapshot of approved evaluators at creation. Settings can narrow it.
+            "evaluator_ids": self._approved_evaluator_ids(),
         }
 
         self.firebase.set_document(self.collection, hackathon_id, hackathon)
@@ -223,6 +226,83 @@ class HackathonService:
             {"max_submissions": limit, "updated_at": now_ist_iso()},
         )
         return {"hackathon_id": hackathon_id, "max_submissions": limit}
+
+    def _approved_evaluators(self) -> list[dict[str, Any]]:
+        return UserService(firebase=self.firebase).get_evaluators(approval_status="approved")
+
+    def _approved_evaluator_ids(self) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        for user in self._approved_evaluators():
+            evaluator_id = user.get("id")
+            if evaluator_id and evaluator_id not in seen:
+                seen.add(evaluator_id)
+                ids.append(evaluator_id)
+        return ids
+
+    def list_hackathon_evaluators(self, hackathon_id: str) -> dict[str, Any]:
+        """
+        Approved evaluators for Manage Evaluators and the submissions dropdown.
+
+        A missing ``evaluator_ids`` field (hackathons created before this setting)
+        treats every currently approved evaluator as assigned.
+        """
+        existing = self.get_hackathon(hackathon_id)
+        if not existing:
+            raise ValueError("Hackathon not found")
+
+        stored = existing.get("evaluator_ids")
+        if stored is None:
+            assigned_ids = None
+        else:
+            assigned_ids = {str(item) for item in stored if item}
+
+        evaluators: list[dict[str, Any]] = []
+        for user in self._approved_evaluators():
+            evaluator_id = user.get("id")
+            if not evaluator_id:
+                continue
+            name = user.get("name") or user.get("email") or evaluator_id
+            evaluators.append(
+                {
+                    "id": evaluator_id,
+                    "name": name,
+                    "email": user.get("email") or "",
+                    "assigned": assigned_ids is None or evaluator_id in assigned_ids,
+                }
+            )
+        evaluators.sort(key=lambda item: (not item["assigned"], item["name"].lower()))
+        return {
+            "hackathon_id": hackathon_id,
+            "evaluators": evaluators,
+            "assigned_count": sum(1 for item in evaluators if item["assigned"]),
+        }
+
+    def set_hackathon_evaluators(
+        self, hackathon_id: str, evaluator_ids: list[str]
+    ) -> dict[str, Any]:
+        """Replace the roster. Every id must be an approved evaluator."""
+        if not self.get_hackathon(hackathon_id):
+            raise ValueError("Hackathon not found")
+
+        approved = {user["id"] for user in self._approved_evaluators() if user.get("id")}
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in evaluator_ids:
+            evaluator_id = (raw or "").strip()
+            if not evaluator_id or evaluator_id in seen:
+                continue
+            if evaluator_id not in approved:
+                raise ValueError("Evaluator is not active (must be approved)")
+            cleaned.append(evaluator_id)
+            seen.add(evaluator_id)
+
+        self.firebase.update_document(
+            self.collection,
+            hackathon_id,
+            {"evaluator_ids": cleaned, "updated_at": now_ist_iso()},
+        )
+        return self.list_hackathon_evaluators(hackathon_id)
 
     def get_hackathon(self, hackathon_id: str) -> dict[str, Any] | None:
         """Fetch a single hackathon by id."""

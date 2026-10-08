@@ -284,7 +284,7 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 
 | Collection | Document | Purpose |
 |------------|----------|---------|
-| `users` | Firebase uid | Profile, `role`, `approval_status` |
+| `users` | Firebase uid | Profile, `role`, `approval_status`. Student Management pages with `GET /admin/users?page=1&page_size=15&role=student&q=`. Omitting `page` still returns the full non-admin array. |
 | `verification_sessions` | session id | Registration or password-reset OTP/phone state |
 | `otp_rate_limits` | `email:…` / `ip:…` | Sliding-window OTP counters |
 | `hackathons` | hackathon id | Timeline rounds, themes, export sheet ids |
@@ -363,6 +363,9 @@ Enforced in `app/services/submission/uniqueness.py` on `POST /submissions` and `
 - Same student + hackathon + round → `409 SUBMISSION_LIMIT_REACHED` once `max_submissions` is used (default 1, max 3, set on the hackathon)
 - Same team (leader already submitted) → `409` with team message
 - Other rounds remain independent
+- Admin `POST /submissions/{id}/withdraw` deletes that submission, its analysis document, and its GCS video. The round slot is free again. Allowed only before an evaluator is assigned; AI analysis may already be done. Once `assigned_evaluator_id` is set, the call returns `409 SUBMISSION_ASSIGNED` and nothing is deleted. Students and evaluators cannot call it. A closed round still rejects a new submit.
+
+`GET /submissions/admin/hackathons/{id}?page=1&page_size=10` returns one page of that queue (`items`, `total`, `page`, `page_size`, `round_summary`). Optional filters are `round_index`, `status` (`uploaded` | `processing` | `completed` | `failed`), and `q` (team name, theme name, or submission id). `round_summary` counts every round and ignores status and search. `page_size` is at most 100. Omitting `page` still returns the full JSON array.
 
 ### 9.4 Video upload and Gemini evaluation
 
@@ -402,6 +405,8 @@ Locally (`EVALUATION_JOB_MODE=auto` without queue config) the same `evaluate_sub
 5. Leaderboard ranks **approved** submissions by `final_score` using competition ranking (100, 90, 90, 80 → 1st, 2nd, 2nd, 4th).
 6. Students get `403 LEADERBOARD_NOT_PUBLISHED` until `POST …/leaderboard/publish`. Admins and evaluators can preview earlier.
 7. First publish emails ranked candidates (Brevo) unless `notify: false`.
+
+Each hackathon stores `evaluator_ids`. Create copies every currently approved evaluator. `GET/PUT /hackathons/{id}/evaluators` is the Settings roster. Submission assign and divide-equally only accept ids on that roster. Hackathons saved before this field still allow any approved evaluator until an admin saves the roster.
 
 ### 9.6 GitHub AI (optional)
 

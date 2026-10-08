@@ -18,13 +18,14 @@ class AssignmentMixin:
         evaluator: dict[str, Any] | None = None
         if evaluator_id is not None and str(evaluator_id).strip():
             evaluator = self._require_active_evaluator(evaluator_id.strip())
+            existing = self.firebase.get_document(self.collection, submission_id)
+            hackathon_id = existing.get("hackathon_id") if isinstance(existing, dict) else None
+            self._assert_evaluator_on_hackathon(hackathon_id, evaluator["id"] if evaluator else "")
 
         now = now_ist_iso()
 
         def _txn(transaction):
-            submission = self.firebase.txn_get(
-                transaction, self.collection, submission_id
-            )
+            submission = self.firebase.txn_get(transaction, self.collection, submission_id)
             if not submission:
                 raise ValueError("Submission not found")
 
@@ -52,9 +53,7 @@ class AssignmentMixin:
                     "updated_at": now,
                 }
 
-            self.firebase.txn_update(
-                transaction, self.collection, submission_id, update
-            )
+            self.firebase.txn_update(transaction, self.collection, submission_id, update)
             return {"id": submission_id, **submission, **update}
 
         return self.firebase.run_transaction(_txn)
@@ -86,13 +85,14 @@ class AssignmentMixin:
             if not submission:
                 raise ValueError(f"Submission not found: {submission_id}")
             if submission.get("hackathon_id") != hackathon_id:
-                raise ValueError(
-                    f"Submission {submission_id} does not belong to this hackathon"
-                )
+                raise ValueError(f"Submission {submission_id} does not belong to this hackathon")
             submissions.append({"id": submission_id, **submission})
 
-        evaluators = self._resolve_active_evaluators(evaluator_ids)
+        allowed_ids = self._hackathon_evaluator_ids(hackathon)
+        evaluators = self._resolve_active_evaluators(evaluator_ids, allowed_ids=allowed_ids)
         if not evaluators:
+            if allowed_ids is not None:
+                raise ValueError("No evaluators assigned to this hackathon")
             raise ValueError("No active (approved) evaluators available to assign")
 
         random.shuffle(submissions)
@@ -136,14 +136,37 @@ class AssignmentMixin:
             "name": user.get("name") or user.get("email") or evaluator_id,
         }
 
+    def _hackathon_evaluator_ids(self, hackathon: dict[str, Any]) -> set[str] | None:
+        """
+        Roster for this hackathon.
+
+        ``None`` means the hackathon has no saved roster (created before this
+        setting), so any approved evaluator may still be assigned.
+        """
+        if not isinstance(hackathon, dict) or "evaluator_ids" not in hackathon:
+            return None
+        return {str(item) for item in (hackathon.get("evaluator_ids") or []) if item}
+
+    def _assert_evaluator_on_hackathon(self, hackathon_id: str | None, evaluator_id: str) -> None:
+        if not isinstance(hackathon_id, str) or not hackathon_id:
+            return
+        hackathon = self.hackathon_service.get_hackathon(hackathon_id)
+        allowed_ids = self._hackathon_evaluator_ids(hackathon)
+        if allowed_ids is None:
+            return
+        if evaluator_id not in allowed_ids:
+            raise ValueError("Evaluator is not assigned to this hackathon")
+
     def _resolve_active_evaluators(
-        self, evaluator_ids: list[str] | None
+        self,
+        evaluator_ids: list[str] | None,
+        allowed_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         approved = self.user_service.get_evaluators(approval_status="approved")
         by_id = {item["id"]: item for item in approved if item.get("id")}
 
         if evaluator_ids is None:
-            return [
+            resolved = [
                 {
                     "id": item["id"],
                     "name": item.get("name") or item.get("email") or item["id"],
@@ -151,22 +174,28 @@ class AssignmentMixin:
                 for item in approved
                 if item.get("id")
             ]
+        else:
+            resolved = []
+            seen: set[str] = set()
+            for raw in evaluator_ids:
+                eid = (raw or "").strip()
+                if not eid or eid in seen:
+                    continue
+                if eid not in by_id:
+                    raise ValueError(f"Evaluator is not active/approved: {eid}")
+                item = by_id[eid]
+                resolved.append(
+                    {
+                        "id": eid,
+                        "name": item.get("name") or item.get("email") or eid,
+                    }
+                )
+                seen.add(eid)
+            if allowed_ids is not None:
+                outside = [item["id"] for item in resolved if item["id"] not in allowed_ids]
+                if outside:
+                    raise ValueError("Evaluator is not assigned to this hackathon")
 
-        resolved: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for raw in evaluator_ids:
-            eid = (raw or "").strip()
-            if not eid or eid in seen:
-                continue
-            if eid not in by_id:
-                raise ValueError(f"Evaluator is not active/approved: {eid}")
-            item = by_id[eid]
-            resolved.append(
-                {
-                    "id": eid,
-                    "name": item.get("name") or item.get("email") or eid,
-                }
-            )
-            seen.add(eid)
+        if allowed_ids is not None:
+            resolved = [item for item in resolved if item["id"] in allowed_ids]
         return resolved
-

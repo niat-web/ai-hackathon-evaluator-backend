@@ -422,6 +422,41 @@ class SubmissionLimitResponse(BaseModel):
     max_submissions: int = Field(..., ge=1, le=3)
 
 
+class HackathonEvaluatorItem(BaseModel):
+    """One approved evaluator on the Manage Evaluators settings list."""
+
+    id: str
+    name: str
+    email: str = ""
+    assigned: bool = Field(
+        ...,
+        description=("True when this evaluator can be chosen on submissions for this hackathon."),
+    )
+
+
+class HackathonEvaluatorsResponse(BaseModel):
+    """Approved evaluators, with which of them belong to this hackathon."""
+
+    hackathon_id: str
+    evaluators: list[HackathonEvaluatorItem] = Field(default_factory=list)
+    assigned_count: int = Field(
+        ...,
+        description="How many approved evaluators are on this hackathon's roster.",
+    )
+
+
+class HackathonEvaluatorsUpdateRequest(BaseModel):
+    """Replace the hackathon's evaluator roster with this approved subset."""
+
+    evaluator_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Approved evaluator user ids who may be assigned to submissions "
+            "for this hackathon. Empty clears the roster."
+        ),
+    )
+
+
 class ReportPublishingUpdateRequest(BaseModel):
     """Hackathon Settings toggle for releasing approved reports to students."""
 

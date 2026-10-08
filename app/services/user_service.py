@@ -13,6 +13,10 @@ from app.services.firebase import FirebaseService
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_USER_PAGE_SIZE = 15
+MAX_USER_PAGE_SIZE = 100
+USER_LIST_ROLES = frozenset({"student", "evaluator"})
+
 
 class UserService:
     """
@@ -100,6 +104,57 @@ class UserService:
         """
         users = self.firebase.get_collection("users")
         return [user for user in users if user.get("role") != "admin"]
+
+    def paginate_users(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        role: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        One page of non-admin users.
+
+        ``role=student`` reads only student documents. Search matches name,
+        email, niat id, and employee id. Newest ``created_at`` first.
+        """
+        if role is not None and role not in USER_LIST_ROLES:
+            raise ValueError("role must be student or evaluator")
+
+        page = max(int(page), 1)
+        page_size = min(max(int(page_size), 1), MAX_USER_PAGE_SIZE)
+        needle = (q or "").strip().lower()
+
+        if role:
+            users = self.firebase.query_collection("users", "role", "==", role)
+        else:
+            users = self.get_non_admin_users()
+
+        if needle:
+            users = [user for user in users if self._user_matches_search(user, needle)]
+
+        users.sort(key=lambda user: (user.get("name") or "").lower())
+        users.sort(key=lambda user: user.get("created_at") or "", reverse=True)
+
+        start = (page - 1) * page_size
+        return {
+            "items": users[start : start + page_size],
+            "total": len(users),
+            "page": page,
+            "page_size": page_size,
+        }
+
+    @staticmethod
+    def _user_matches_search(user: dict[str, Any], needle: str) -> bool:
+        haystacks = (
+            user.get("name"),
+            user.get("email"),
+            user.get("niat_id"),
+            user.get("employee_id"),
+            user.get("id"),
+        )
+        return any(needle in str(value or "").lower() for value in haystacks)
 
     def get_evaluators(
         self, approval_status: Optional[ApprovalStatus] = None

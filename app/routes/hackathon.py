@@ -18,6 +18,8 @@ Hackathon routes.
     PUT    /hackathons/{id}/report-publishing -> admin: set auto-publish (publishes backlog)
     GET    /hackathons/{id}/submission-limit -> admin: max submissions per round
     PUT    /hackathons/{id}/submission-limit -> admin: set max submissions (1–3)
+    GET    /hackathons/{id}/evaluators -> admin: roster for settings and the dropdown
+    PUT    /hackathons/{id}/evaluators -> admin: replace which evaluators can be assigned
 """
 
 import json
@@ -44,6 +46,8 @@ from app.models.hackathon_model import (
     HackathonPrizes,
     HackathonResponse,
     HackathonUpdateRequest,
+    HackathonEvaluatorsResponse,
+    HackathonEvaluatorsUpdateRequest,
     ReportPublishingResponse,
     ReportPublishingUpdateRequest,
     SubmissionLimitResponse,
@@ -597,6 +601,51 @@ async def update_submission_limit(
     except ValueError as e:
         raise _prompt_http_error(e) from e
     return SubmissionLimitResponse(**payload)
+
+
+@router.get(
+    "/{hackathon_id}/evaluators",
+    response_model=HackathonEvaluatorsResponse,
+)
+async def get_hackathon_evaluators(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> HackathonEvaluatorsResponse:
+    """
+    Approved evaluators and which of them can be assigned on this hackathon.
+
+    The submissions Evaluator dropdown uses the rows where ``assigned`` is true.
+    """
+    _ = admin
+    try:
+        payload = await run_sync(service.list_hackathon_evaluators, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonEvaluatorsResponse(**payload)
+
+
+@router.put(
+    "/{hackathon_id}/evaluators",
+    response_model=HackathonEvaluatorsResponse,
+)
+async def update_hackathon_evaluators(
+    hackathon_id: str,
+    request: HackathonEvaluatorsUpdateRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> HackathonEvaluatorsResponse:
+    """Replace this hackathon's evaluator roster with an approved subset."""
+    _ = admin
+    try:
+        payload = await run_sync(
+            service.set_hackathon_evaluators,
+            hackathon_id,
+            request.evaluator_ids,
+        )
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonEvaluatorsResponse(**payload)
 
 
 @router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])

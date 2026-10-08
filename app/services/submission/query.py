@@ -20,6 +20,34 @@ from app.utils.hackathon_round import (
 )
 
 
+ADMIN_SUBMISSION_STATUSES = frozenset({"uploaded", "processing", "completed", "failed"})
+DEFAULT_SUBMISSION_PAGE_SIZE = 10
+MAX_SUBMISSION_PAGE_SIZE = 100
+
+
+def admin_queue_round_index(submission: dict[str, Any]) -> int:
+    """Same round key the admin table uses: missing or 0 stays on round 0."""
+    raw = submission.get("round_index")
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return value or 0
+
+
+def submission_counts_as_evaluated(submission: dict[str, Any]) -> bool:
+    """Match the admin round card: published, scored, or AI status completed."""
+    if submission.get("report_published"):
+        return True
+    if submission.get("final_score") is not None:
+        return True
+    if submission.get("review_score") is not None:
+        return True
+    return submission.get("status") == "completed"
+
+
 class QueryMixin:
     def get_submission(
         self,
@@ -165,6 +193,81 @@ class QueryMixin:
             ]
         submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return submissions
+
+    def paginate_hackathon_submissions(
+        self,
+        hackathon_id: str,
+        *,
+        page: int,
+        page_size: int,
+        round_index: int | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        One page of a hackathon's submissions for the admin queue.
+
+        ``round_summary`` counts every submission in the hackathon. ``total``
+        and ``items`` honor round, status, and search. Newest ``created_at`` first.
+        """
+        if status is not None and status not in ADMIN_SUBMISSION_STATUSES:
+            raise ValueError("status must be uploaded, processing, completed, or failed")
+
+        page = max(int(page), 1)
+        page_size = min(max(int(page_size), 1), MAX_SUBMISSION_PAGE_SIZE)
+        needle = (q or "").strip().lower()
+
+        submissions = self.list_submissions_for_hackathon(hackathon_id)
+        summary_counts: dict[int, dict[str, int]] = {}
+        for submission in submissions:
+            index = admin_queue_round_index(submission)
+            bucket = summary_counts.setdefault(index, {"total": 0, "evaluated": 0})
+            bucket["total"] += 1
+            if submission_counts_as_evaluated(submission):
+                bucket["evaluated"] += 1
+
+        filtered = [
+            submission
+            for submission in submissions
+            if self._matches_admin_queue_filters(
+                submission,
+                round_index=round_index,
+                status=status,
+                needle=needle,
+            )
+        ]
+        start = (page - 1) * page_size
+        return {
+            "items": filtered[start : start + page_size],
+            "total": len(filtered),
+            "page": page,
+            "page_size": page_size,
+            "round_summary": [
+                {"round_index": index, "total": counts["total"], "evaluated": counts["evaluated"]}
+                for index, counts in sorted(summary_counts.items())
+            ],
+        }
+
+    @staticmethod
+    def _matches_admin_queue_filters(
+        submission: dict[str, Any],
+        *,
+        round_index: int | None,
+        status: str | None,
+        needle: str,
+    ) -> bool:
+        if round_index is not None and admin_queue_round_index(submission) != round_index:
+            return False
+        if status is not None and submission.get("status") != status:
+            return False
+        if not needle:
+            return True
+        team_name = str(submission.get("team_name") or "").strip()
+        if not team_name:
+            team_name = str(submission.get("title") or "")
+        theme_name = str(submission.get("theme_name") or submission.get("theme_chosen") or "")
+        haystacks = (team_name, theme_name, str(submission.get("id") or ""))
+        return any(needle in value.lower() for value in haystacks)
 
     def list_hackathons_with_submission_counts(
         self,

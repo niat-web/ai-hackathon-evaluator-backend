@@ -7,6 +7,7 @@ Student submission routes.
     GET    /submissions/accepted-video-types -> allowed MIME/ext for Record + Upload UI
     GET    /submissions                 -> student lists their own submissions
     GET    /submissions/admin/hackathons              -> admin: hackathons + submission counts
+    GET    /submissions/admin/hackathons/{id}?page= -> admin: one page of that hackathon's queue
     POST   /submissions/admin/hackathons/{hackathon_id}/export/google-sheet -> admin: sync Google Sheet
     POST   /submissions/admin/hackathons/{hackathon_id}/assign-equally
            -> admin: randomly divide selected submissions among active evaluators
@@ -28,6 +29,7 @@ Student submission routes.
     POST   /submissions/{id}/request-changes -> admin sends evaluation back to evaluator
     POST   /submissions/{id}/publish    -> admin publishes / unpublishes the report
     POST   /submissions/{id}/assign     -> admin assigns one evaluator (dropdown)
+    POST   /submissions/{id}/withdraw   -> admin deletes the submission so the student can resubmit
 """
 
 import json
@@ -39,6 +41,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     status,
@@ -62,12 +65,14 @@ from app.models.submission_model import (
     DivideEquallyResponse,
     EvaluateSubmissionRequest,
     HackathonSubmissionSummary,
+    PaginatedSubmissionsResponse,
     PrepareUploadRequest,
     PrepareUploadResponse,
     PublishReportRequest,
     RequestChangesRequest,
     SubmissionResponse,
     SubmissionTeamResponse,
+    WithdrawSubmissionResponse,
     SubmitForReviewRequest,
 )
 from app.models.user_model import CurrentUser
@@ -393,14 +398,50 @@ async def list_hackathons_for_admin_submissions(
 
 @router.get(
     "/admin/hackathons/{hackathon_id}",
-    response_model=list[SubmissionResponse],
+    response_model=PaginatedSubmissionsResponse | list[SubmissionResponse],
 )
 async def list_submissions_for_hackathon_admin(
     hackathon_id: str,
+    page: int
+    | None = Query(
+        None,
+        ge=1,
+        description="1-based page. When set, the response is one page instead of the full list.",
+    ),
+    page_size: int = Query(
+        10,
+        ge=1,
+        le=100,
+        description="Rows in the page. Default 10, maximum 100.",
+    ),
+    round_index: int
+    | None = Query(
+        None,
+        ge=0,
+        description="0-based timeline round. Omit to include every round.",
+    ),
+    submission_status: str
+    | None = Query(
+        None,
+        alias="status",
+        description="uploaded | processing | completed | failed. Omit for every status.",
+    ),
+    q: str
+    | None = Query(
+        None,
+        max_length=200,
+        description="Case-insensitive match on team name, theme name, or submission id.",
+    ),
     admin: CurrentUser = Depends(get_admin_user),
     service: SubmissionService = Depends(get_submission_service),
-) -> list[SubmissionResponse]:
-    """Admin: list all submissions belonging to a specific hackathon."""
+) -> PaginatedSubmissionsResponse | list[SubmissionResponse]:
+    """
+    Admin queue for one hackathon.
+
+    Without ``page``, returns every submission as a JSON array (existing clients).
+    With ``page``, returns ``{ items, total, page, page_size, round_summary }``.
+    ``round_summary`` ignores status and search so the round cards stay stable.
+    """
     hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
     if not hackathon:
         raise HTTPException(
@@ -408,8 +449,31 @@ async def list_submissions_for_hackathon_admin(
             detail="Hackathon not found",
         )
 
-    submissions = await run_sync(service.list_submissions_for_hackathon, hackathon_id)
-    return await _to_submission_responses(service, submissions, current_user=admin)
+    if page is None:
+        submissions = await run_sync(service.list_submissions_for_hackathon, hackathon_id)
+        return await _to_submission_responses(service, submissions, current_user=admin)
+
+    try:
+        payload = await run_sync(
+            service.paginate_hackathon_submissions,
+            hackathon_id,
+            page=page,
+            page_size=page_size,
+            round_index=round_index,
+            status=submission_status,
+            q=q,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+    items = await _to_submission_responses(service, payload["items"], current_user=admin)
+    return PaginatedSubmissionsResponse(
+        items=items,
+        total=payload["total"],
+        page=payload["page"],
+        page_size=payload["page_size"],
+        round_summary=payload["round_summary"],
+    )
 
 
 @router.post(
@@ -1072,3 +1136,33 @@ async def assign_submission_evaluator(
             submission = refreshed
 
     return await _to_submission_response(service, submission, current_user=admin)
+
+
+@router.post("/{submission_id}/withdraw", response_model=WithdrawSubmissionResponse)
+async def withdraw_submission(
+    submission_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> WithdrawSubmissionResponse:
+    """
+    Delete one submission completely.
+
+    The video, answers, AI analysis, scores, and report are removed. That
+    round's submission slot is free, so the student or team leader can submit
+    again while the round is still open.
+
+    Only while ``assigned_evaluator_id`` is empty. AI analysis may already be
+    finished. Once an evaluator is assigned, this returns 409
+    ``SUBMISSION_ASSIGNED`` and nothing is deleted.
+    """
+    try:
+        result = await run_sync(
+            service.withdraw_submission,
+            submission_id,
+            admin.user_id,
+        )
+    except AppError:
+        raise
+    except ValueError as e:
+        raise _http_from_value_error(e) from e
+    return WithdrawSubmissionResponse(**result)
