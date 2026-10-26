@@ -229,11 +229,11 @@ Shared collections and Gemini/GCS clients live on `SubmissionServiceBase`.
 
 `POST /auth/login` does **not** mint tokens with the Admin SDK. It calls Firebase Identity Toolkit `signInWithPassword` (`FIREBASE_WEB_API_KEY`), checks `aud` / `uid` against the Firestore user, then sets:
 
-- HttpOnly `access_token` cookie
-- `csrf_token` cookie
+- HttpOnly `access_token` cookie holding a Firebase session cookie that lasts **1 day** for every role
+- `csrf_token` cookie with the same lifetime
 - JSON body includes `csrf_token` (required for cross-origin SPAs; `document.cookie` cannot read the API cookie)
 
-`Authorization: Bearer` still works for Swagger and non-browser clients.
+The Identity Toolkit ID token still expires in one hour and is only used to mint that session cookie. `Authorization: Bearer` still sends an ID token, so Swagger and other non-browser clients stay on the one-hour token.
 
 ### Request auth
 

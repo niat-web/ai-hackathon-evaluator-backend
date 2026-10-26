@@ -35,9 +35,7 @@ def _request(
     # Starlette reads cookies from headers; inject via cookie header if needed.
     if cookies:
         cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
-        scope["headers"] = list(scope["headers"]) + [
-            (b"cookie", cookie_header.encode())
-        ]
+        scope["headers"] = list(scope["headers"]) + [(b"cookie", cookie_header.encode())]
         req = Request(scope)
     return req
 
@@ -127,6 +125,67 @@ def test_authenticate_token_passes_check_revoked_true():
     firebase.verify_id_token.assert_called_once_with(token, check_revoked=True)
     assert isinstance(user, CurrentUser)
     assert user.user_id == "u1"
+
+
+def test_browser_cookie_uses_the_one_day_session_cookie():
+    firebase = MagicMock()
+    firebase.verify_session_cookie.return_value = {"uid": "u1"}
+    user_service = MagicMock()
+    user_service.get_user.return_value = {
+        "email": "a@b.com",
+        "role": "admin",
+        "name": "A",
+        "approval_status": "approved",
+    }
+
+    with (
+        patch.object(auth_middleware, "FirebaseService", return_value=firebase),
+        patch.object(auth_middleware, "UserService", return_value=user_service),
+        patch.object(
+            auth_middleware.RegistrationService,
+            "resolve_approval_status",
+            return_value="approved",
+        ),
+    ):
+        token = "aaa.bbb.ccc"
+        user = auth_middleware._authenticate_token(
+            token,
+            prefer_session_cookie=True,
+        )
+
+    firebase.verify_session_cookie.assert_called_once_with(token, check_revoked=True)
+    firebase.verify_id_token.assert_not_called()
+    assert user.role == "admin"
+
+
+def test_old_id_token_cookie_still_verifies_until_it_expires():
+    firebase = MagicMock()
+    firebase.verify_session_cookie.side_effect = ValueError("Invalid session cookie")
+    firebase.verify_id_token.return_value = {"uid": "u1"}
+    user_service = MagicMock()
+    user_service.get_user.return_value = {
+        "email": "a@b.com",
+        "role": "evaluator",
+        "name": "A",
+        "approval_status": "approved",
+    }
+
+    with (
+        patch.object(auth_middleware, "FirebaseService", return_value=firebase),
+        patch.object(auth_middleware, "UserService", return_value=user_service),
+        patch.object(
+            auth_middleware.RegistrationService,
+            "resolve_approval_status",
+            return_value="approved",
+        ),
+    ):
+        user = auth_middleware._authenticate_token(
+            "aaa.bbb.ccc",
+            prefer_session_cookie=True,
+        )
+
+    firebase.verify_id_token.assert_called_once()
+    assert user.role == "evaluator"
 
 
 def test_change_password_request_current_password_optional():

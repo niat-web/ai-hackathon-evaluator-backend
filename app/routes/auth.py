@@ -68,6 +68,24 @@ from app.utils.auth_cookies import (
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _set_browser_session(
+    response: JSONResponse,
+    firebase: FirebaseService,
+    id_token: str,
+) -> None:
+    """Store a one-day session cookie. The ID token itself still expires in an hour."""
+    try:
+        session_cookie = await run_sync(firebase.create_session_cookie, id_token)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+    set_auth_cookie(response, session_cookie)
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -235,7 +253,7 @@ async def register_complete(
         csrf_token=csrf_token,
     ).model_dump()
     response = JSONResponse(content=body)
-    set_auth_cookie(response, id_token)
+    await _set_browser_session(response, firebase, id_token)
     set_csrf_cookie(response, token=csrf_token)
     return response
 
@@ -272,7 +290,7 @@ async def register_evaluator_complete(
         csrf_token=csrf_token,
     ).model_dump()
     response = JSONResponse(content=body)
-    set_auth_cookie(response, id_token)
+    await _set_browser_session(response, firebase, id_token)
     set_csrf_cookie(response, token=csrf_token)
     return response
 
@@ -445,7 +463,7 @@ async def login(
         ).model_dump()
 
         response = JSONResponse(content=payload)
-        set_auth_cookie(response, id_token)
+        await _set_browser_session(response, firebase, id_token)
         # Phase 5b: double-submit CSRF (cookie + body for cross-origin SPAs).
         set_csrf_cookie(response, token=csrf_token)
         return response

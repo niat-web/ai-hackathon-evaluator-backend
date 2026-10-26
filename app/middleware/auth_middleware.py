@@ -99,10 +99,22 @@ def _enforce_csrf_if_needed(request: Request, used_cookie: bool) -> None:
         )
 
 
+def _verify_browser_token(firebase: FirebaseService, token: str) -> dict:
+    """Session cookie first. An ID token still in an old cookie is accepted too."""
+    try:
+        return firebase.verify_session_cookie(token, check_revoked=True)
+    except ValueError as session_error:
+        message = str(session_error).lower()
+        if "expired" in message or "revoked" in message:
+            raise
+        return firebase.verify_id_token(token, check_revoked=True)
+
+
 def _authenticate_token(
     token: str,
     firebase: FirebaseService | None = None,
     user_service: UserService | None = None,
+    prefer_session_cookie: bool = False,
 ) -> CurrentUser:
     firebase = firebase or FirebaseService()
     user_service = user_service or UserService()
@@ -130,7 +142,10 @@ def _authenticate_token(
 
     try:
         # Phase 5a: reject revoked tokens (e.g. after password change).
-        decoded_token = firebase.verify_id_token(token, check_revoked=True)
+        if prefer_session_cookie:
+            decoded_token = _verify_browser_token(firebase, token)
+        else:
+            decoded_token = firebase.verify_id_token(token, check_revoked=True)
     except ValueError as token_error:
         logger.warning("Invalid ID token: %s", str(token_error))
         raise HTTPException(
@@ -220,7 +235,13 @@ async def get_current_user(
             )
 
         _enforce_csrf_if_needed(request, used_cookie)
-        current_user = await run_sync(_authenticate_token, token, firebase, user_service)
+        current_user = await run_sync(
+            _authenticate_token,
+            token,
+            firebase,
+            user_service,
+            used_cookie,
+        )
         request.state.activity_actor = {
             "user_id": current_user.user_id,
             "name": current_user.name,
@@ -256,11 +277,17 @@ async def get_optional_current_user(
     user_service: UserService = Depends(get_user_service),
 ) -> CurrentUser | None:
     """Signed-in user when a token is present. Anonymous callers stay anonymous."""
-    token, _used_cookie = _extract_token(request, credentials)
+    token, used_cookie = _extract_token(request, credentials)
     if not token:
         return None
     try:
-        return await run_sync(_authenticate_token, token, firebase, user_service)
+        return await run_sync(
+            _authenticate_token,
+            token,
+            firebase,
+            user_service,
+            used_cookie,
+        )
     except (HTTPException, AppError, ValueError):
         return None
 
