@@ -3,6 +3,7 @@ Hackathon team enrollment routes (solo or 2–5 member teams), scoped per round.
 
     GET  /hackathons/{id}/rounds/{round_index}/participation
     POST /hackathons/{id}/rounds/{round_index}/enroll/solo
+    POST /hackathons/{id}/rounds/{round_index}/enroll/revert
     POST /hackathons/{id}/rounds/{round_index}/teams/create
     POST /hackathons/{id}/rounds/{round_index}/teams/join
     POST /hackathons/{id}/rounds/{round_index}/teams/join-code
@@ -64,8 +65,26 @@ async def enroll_solo(
 ) -> HackathonParticipationResponse:
     """Enroll directly for solo (1-member) rounds."""
     try:
+        return await run_sync(team_service.enroll_solo, hackathon_id, round_index, current_user)
+    except AppError:
+        raise
+
+
+@router.post(
+    "/{hackathon_id}/rounds/{round_index}/enroll/revert",
+    response_model=HackathonParticipationResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def revert_enrollment(
+    hackathon_id: str,
+    round_index: int,
+    current_user: CurrentUser = Depends(get_current_user),
+    team_service: TeamService = Depends(get_team_service),
+) -> HackathonParticipationResponse:
+    """Undo Solo, team leader, or team member for this round before anyone has submitted."""
+    try:
         return await run_sync(
-            team_service.enroll_solo, hackathon_id, round_index, current_user
+            team_service.revert_enrollment, hackathon_id, round_index, current_user
         )
     except AppError:
         raise

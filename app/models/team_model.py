@@ -83,6 +83,13 @@ class HackathonParticipationResponse(BaseModel):
     round_open: bool = False
     enrolled: bool
     role: Literal["solo", "leader", "member"] | None = None
+    can_revert: bool = Field(
+        False,
+        description=(
+            "True when this student can undo Solo, team leader, or team member "
+            "for this round. Show the button from this flag."
+        ),
+    )
     team: HackathonTeamResponse | None = None
     can_submit: bool
     can_continue_to_demo: bool = False

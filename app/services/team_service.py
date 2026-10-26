@@ -214,6 +214,13 @@ class TeamService:
             round_open=round_open,
             enrolled=enrolled,
             role=role,
+            can_revert=self._can_revert(
+                role=role if enrolled else None,
+                team=team,
+                submission_count=submission_count,
+                round_status=round_status,
+                hackathon_closed=hackathon_status == "closed",
+            ),
             team=team,
             can_submit=can_submit,
             can_continue_to_demo=can_continue_to_demo,
@@ -355,6 +362,94 @@ class TeamService:
             },
         )
         return self.get_participation(hackathon_id, round_index, user)
+
+    def revert_enrollment(
+        self, hackathon_id: str, round_index: int, user: CurrentUser
+    ) -> HackathonParticipationResponse:
+        """
+        Undo this student's role on one round, before anyone on that choice has submitted.
+
+        Solo deletes that enrollment. A member leaves the roster. A leader who is
+        alone deletes the team and its join codes. A leader with teammates is rejected.
+        """
+        hackathon = self._require_hackathon(hackathon_id)
+        self._assert_visible_to_student(hackathon, user)
+        self._resolve_round(hackathon, round_index)
+        self._assert_round_accepts_enrollment(hackathon, round_index)
+        self._assert_student(user)
+
+        enrollment = self._get_enrollment_doc(hackathon_id, round_index, user.user_id)
+        role = (enrollment or {}).get("role")
+        if role not in ("solo", "leader", "member"):
+            raise ConflictError(
+                "You have not chosen a role for this round",
+                code="NOT_ENROLLED",
+            )
+
+        team_id = str((enrollment or {}).get("team_id") or "").strip() or None
+        if list_round_submissions(
+            self.firebase,
+            student_id=user.user_id,
+            hackathon_id=hackathon_id,
+            round_index=round_index,
+            team_id=team_id,
+        ):
+            raise ConflictError(
+                "You already submitted for this round, so this choice cannot be changed.",
+                code="ALREADY_SUBMITTED",
+            )
+
+        if role == "leader" and team_id:
+            team_doc = self.firebase.get_document(TEAMS, team_id)
+            if team_doc and self._team_has_teammates(team_doc, user.user_id):
+                raise ConflictError(
+                    "Ask your teammates to go back before you change this choice.",
+                    code="TEAM_HAS_MEMBERS",
+                )
+            if team_doc:
+                self._revoke_team_join_codes(hackathon_id, round_index, team_id)
+                self.firebase.delete_document(TEAMS, team_id)
+        elif role == "member" and team_id:
+            team_doc = self.firebase.get_document(TEAMS, team_id)
+            if team_doc:
+                members = [
+                    member
+                    for member in list(team_doc.get("members") or [])
+                    if member.get("user_id") != user.user_id
+                ]
+                self.firebase.update_document(
+                    TEAMS,
+                    team_id,
+                    {"members": members, "updated_at": now_ist_iso()},
+                )
+
+        self.firebase.delete_document(
+            ENROLLMENTS, self._enrollment_id(hackathon_id, round_index, user.user_id)
+        )
+        return self.get_participation(hackathon_id, round_index, user)
+
+    @staticmethod
+    def _can_revert(
+        *,
+        role: str | None,
+        team: HackathonTeamResponse | None,
+        submission_count: int,
+        round_status: str,
+        hackathon_closed: bool,
+    ) -> bool:
+        if role not in ("solo", "leader", "member"):
+            return False
+        if submission_count > 0 or hackathon_closed or round_status in ("draft", "closed"):
+            return False
+        if role == "leader" and team is not None and team.member_count > 1:
+            return False
+        return True
+
+    @staticmethod
+    def _team_has_teammates(team_doc: dict[str, Any], leader_id: str) -> bool:
+        return any(
+            member.get("user_id") != leader_id for member in list(team_doc.get("members") or [])
+        )
 
     def create_team(
         self,

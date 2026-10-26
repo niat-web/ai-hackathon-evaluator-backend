@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # role_management is not in this list: only the seeded Super Admin can create roles.
 ASSIGNABLE_PERMISSIONS: tuple[dict[str, str], ...] = (
     {"key": "overview", "label": "Overview", "group": "Administration"},
+    {"key": "analysis", "label": "Analysis", "group": "Administration"},
     {"key": "submissions", "label": "Submissions", "group": "Administration"},
     {"key": "hackathons", "label": "Hackathons", "group": "Administration"},
     {"key": "themes", "label": "Themes", "group": "Administration"},
@@ -63,6 +64,7 @@ ALL_PERMISSIONS: tuple[str, ...] = tuple(
 _PATH_PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("/super-admin/settings", "application_settings"),
     ("/admin/overview", "overview"),
+    ("/admin/analysis", "analysis"),
     ("/admin/evaluators", "evaluator_management"),
     ("/admin/users", "student_management"),
     ("/admin/user/", "student_management"),

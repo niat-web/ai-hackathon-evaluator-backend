@@ -598,8 +598,8 @@ class AssignEvaluatorRequest(BaseModel):
         None,
         max_length=500,
         description=(
-            "Required when this submission already has an evaluator. "
-            "Not required for the first assignment."
+            "Required only when one evaluator replaces another (1 to 500 characters). "
+            "A first assignment and unassign do not need a reason."
         ),
     )
 

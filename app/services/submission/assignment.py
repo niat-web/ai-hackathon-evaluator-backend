@@ -41,9 +41,9 @@ class AssignmentMixin:
     ) -> dict[str, Any]:
         """Assign one approved evaluator to a submission, or clear the assignment.
 
-        A first assignment needs no reason. Changing or removing an evaluator
-        does. The previous score stays on the submission; only the review
-        workflow resets so the new evaluator can submit.
+        A first assignment and clearing the assignee need no reason. A
+        person-to-person change does. The previous score stays on the
+        submission; the review workflow resets so the new evaluator can submit.
         """
         target_id = (evaluator_id or "").strip() or None
         cleaned_reason = (reason or "").strip() or None
@@ -71,7 +71,8 @@ class AssignmentMixin:
             if previous_id == next_id:
                 return {"id": submission_id, **submission}
 
-            if previous_id and not cleaned_reason:
+            person_change = bool(previous_id and next_id)
+            if person_change and not cleaned_reason:
                 raise BadRequestError(_REASON_REQUIRED, code="REASON_REQUIRED")
 
             history = list(submission.get("assignment_history") or [])
@@ -88,7 +89,7 @@ class AssignmentMixin:
                     ),
                     "to_evaluator_id": next_id,
                     "to_evaluator_name": evaluator["name"] if evaluator else None,
-                    "reason": cleaned_reason if previous_id else None,
+                    "reason": cleaned_reason if person_change else None,
                     "evaluation_submitted": bool(previous_id)
                     and _evaluation_was_submitted(submission),
                 }

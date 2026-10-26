@@ -14,6 +14,7 @@ from app.routes import (
     access,
     activity,
     admin,
+    analysis_screen,
     auth,
     evaluation_prompt,
     evaluation_requirement,
@@ -126,6 +127,7 @@ async def health_check():
 # Include routers
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(analysis_screen.router)
 app.include_router(access.router)
 app.include_router(activity.router)
 app.include_router(settings.router)

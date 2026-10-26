@@ -6,7 +6,7 @@ import pytest
 
 from app.exceptions import BadRequestError, ConflictError, ForbiddenError, NotFoundError
 from app.models.user_model import CurrentUser
-from app.services.team_service import JOIN_CODES, TeamService
+from app.services.team_service import ENROLLMENTS, JOIN_CODES, TEAMS, TeamService
 from app.utils.team_code import join_code_document_id
 from app.utils.time import IST
 
@@ -374,3 +374,176 @@ def test_refresh_join_code_revokes_previous():
     join_code_ids = {doc_id for (coll, doc_id) in svc.firebase.store if coll == JOIN_CODES}
     assert join_code_document_id("hack-1", 0, refreshed.code) in join_code_ids
     assert join_code_document_id("hack-1", 0, first.join_code.code) not in join_code_ids
+
+
+def _enrollment_ids(svc: TeamService) -> set[str]:
+    return {doc_id for (coll, doc_id) in svc.firebase.store if coll == ENROLLMENTS}
+
+
+def test_solo_revert_returns_to_enroll_and_leaves_the_other_round():
+    svc = _service()
+    student = _student("solo-1")
+    svc.enroll_solo("hack-1", 1, student)
+    before = svc.get_participation("hack-1", 1, student)
+    assert before.can_revert is True
+
+    reverted = svc.revert_enrollment("hack-1", 1, student)
+    assert reverted.enrolled is False
+    assert reverted.role is None
+    assert reverted.can_revert is False
+    assert reverted.pending_action == "solo_enroll"
+    assert _enrollment_ids(svc) == set()
+
+
+def test_open_round_solo_revert_returns_to_choose_role():
+    svc = _service(timeline=[_open_round(title="Open", team_size_mode="open")])
+    student = _student("solo-1")
+    svc.enroll_solo("hack-1", 0, student)
+    reverted = svc.revert_enrollment("hack-1", 0, student)
+    assert reverted.pending_action == "choose_role"
+    assert reverted.enrolled is False
+
+
+def test_member_revert_leaves_the_team_and_unlocks_the_leader():
+    svc = _service()
+    leader = _student("leader-1")
+    member = _student("member-1")
+    created = svc.create_team("hack-1", 0, leader, "Alpha")
+    svc.join_team("hack-1", 0, member, created.join_code.code)
+    assert svc.get_participation("hack-1", 0, leader).can_revert is False
+    assert svc.get_participation("hack-1", 0, member).can_revert is True
+
+    with pytest.raises(ConflictError) as blocked:
+        svc.revert_enrollment("hack-1", 0, leader)
+    assert blocked.value.code == "TEAM_HAS_MEMBERS"
+    assert svc.get_participation("hack-1", 0, leader).enrolled is True
+
+    left = svc.revert_enrollment("hack-1", 0, member)
+    assert left.enrolled is False
+    assert left.pending_action == "choose_role"
+    assert left.role is None
+    leader_view = svc.get_participation("hack-1", 0, leader)
+    assert leader_view.can_revert is True
+    assert leader_view.team is not None
+    assert leader_view.team.member_count == 1
+
+
+def test_lone_leader_revert_deletes_the_team_and_join_codes():
+    svc = _service()
+    leader = _student("leader-1")
+    created = svc.create_team("hack-1", 0, leader, "Alpha")
+    svc.enroll_solo("hack-1", 1, _student("solo-1"))
+    team_id = created.team.id
+
+    reverted = svc.revert_enrollment("hack-1", 0, leader)
+    assert reverted.pending_action == "choose_role"
+    assert reverted.team is None
+    assert svc.firebase.get_document(TEAMS, team_id) is None
+    assert not any(coll == JOIN_CODES for coll, _doc_id in svc.firebase.store)
+    assert any(doc_id.endswith("_solo-1") for doc_id in _enrollment_ids(svc))
+    again = svc.create_team("hack-1", 0, leader, "Beta")
+    assert again.team.team_name == "Beta"
+
+
+def test_a_team_submission_blocks_every_member():
+    svc = _service()
+    leader = _student("leader-1")
+    member = _student("member-1")
+    created = svc.create_team("hack-1", 0, leader, "Alpha")
+    svc.join_team("hack-1", 0, member, created.join_code.code)
+    svc.firebase.set_document(
+        "submissions",
+        "sub-team",
+        {
+            "student_id": "leader-1",
+            "hackathon_id": "hack-1",
+            "hackathon_team_id": created.team.id,
+            "round_index": 0,
+        },
+    )
+    assert svc.get_participation("hack-1", 0, member).can_revert is False
+    with pytest.raises(ConflictError) as exc:
+        svc.revert_enrollment("hack-1", 0, member)
+    assert exc.value.code == "ALREADY_SUBMITTED"
+    assert "cannot be changed" in str(exc.value)
+    assert svc.get_participation("hack-1", 0, member).enrolled is True
+
+
+def test_revert_is_allowed_while_the_round_is_still_scheduled():
+    svc = _service(
+        timeline=[
+            _open_round(
+                title="Later",
+                max_team_size=1,
+                start_date="2026-12-01",
+                end_date="2026-12-31",
+            )
+        ]
+    )
+    student = _student("solo-1")
+    svc.enroll_solo("hack-1", 0, student)
+    assert svc.get_participation("hack-1", 0, student).can_revert is True
+    reverted = svc.revert_enrollment("hack-1", 0, student)
+    assert reverted.enrolled is False
+
+
+def test_revert_rejects_closed_unpublished_hidden_and_missing_role():
+    closed = _service(timeline=[_open_round(title="Done", max_team_size=1)])
+    student = _student("solo-1")
+    closed.enroll_solo("hack-1", 0, student)
+    closed.hackathon_service.hackathons["hack-1"]["timeline"][0]["end_date"] = "2026-01-01"
+    assert closed.get_participation("hack-1", 0, student).can_revert is False
+    with pytest.raises(ForbiddenError) as round_closed:
+        closed.revert_enrollment("hack-1", 0, student)
+    assert round_closed.value.code == "ROUND_CLOSED"
+    assert closed.get_participation("hack-1", 0, student).enrolled is True
+
+    ended = _service(timeline=[_open_round(title="Open", max_team_size=1)])
+    ended.enroll_solo("hack-1", 0, student)
+    ended.hackathon_service.hackathons["hack-1"]["end_date"] = "2026-01-02"
+    ended.hackathon_service.hackathons["hack-1"]["end_time"] = "11:59"
+    assert ended.get_participation("hack-1", 0, student).can_revert is False
+    with pytest.raises(ForbiddenError) as hackathon_closed:
+        ended.revert_enrollment("hack-1", 0, student)
+    assert hackathon_closed.value.code == "HACKATHON_CLOSED"
+
+    draft = _service(timeline=[_open_round(title="Draft", max_team_size=1, published=False)])
+    with pytest.raises(ForbiddenError) as unpublished:
+        draft.revert_enrollment("hack-1", 0, student)
+    assert unpublished.value.code == "ROUND_NOT_PUBLISHED"
+
+    hidden = _service()
+    hidden.hackathon_service.hackathons["hack-1"]["visibility"] = {
+        "all_universities": False,
+        "all_batches": True,
+        "university_ids": ["other-uni"],
+    }
+    campus = _student("solo-1")
+    campus.university_id = "uni-1"
+    with pytest.raises(ForbiddenError) as hidden_exc:
+        hidden.revert_enrollment("hack-1", 0, campus)
+    assert hidden_exc.value.code == "NOT_VISIBLE"
+
+    with pytest.raises(ForbiddenError) as staff:
+        hidden.revert_enrollment(
+            "hack-1",
+            0,
+            CurrentUser(
+                user_id="admin-1",
+                email="admin@example.com",
+                role="admin",
+                name="Admin",
+            ),
+        )
+    assert staff.value.code == "FORBIDDEN"
+
+    with pytest.raises(ConflictError) as missing:
+        _service().revert_enrollment("hack-1", 0, student)
+    assert missing.value.code == "NOT_ENROLLED"
+
+    with pytest.raises(NotFoundError) as missing_hack:
+        _service().revert_enrollment("missing", 0, student)
+    assert missing_hack.value.code == "HACKATHON_NOT_FOUND"
+    with pytest.raises(NotFoundError) as missing_round:
+        _service().revert_enrollment("hack-1", 9, student)
+    assert missing_round.value.code == "ROUND_NOT_FOUND"

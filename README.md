@@ -599,11 +599,12 @@ Per-round enrollment before submission. Solo rounds (`max_team_size = 1`) use th
 |--------|------|------|-------------|
 | GET | `/hackathons/{id}/rounds/{round_index}/participation` | student | Enrollment status for this round |
 | POST | `/hackathons/{id}/rounds/{round_index}/enroll/solo` | student | Solo enroll (round `max_team_size = 1`) |
+| POST | `/hackathons/{id}/rounds/{round_index}/enroll/revert` | student | Undo Solo, leader, or member before anyone on that choice has submitted. No body. Returns participation. Show the button from `can_revert`. |
 | POST | `/hackathons/{id}/rounds/{round_index}/teams/create` | student | Leader creates team with `{ "team_name": "..." }` → 6-digit join code (5 min) |
 | POST | `/hackathons/{id}/rounds/{round_index}/teams/join` | student | Member joins with `{ "code": "123456" }` |
 | POST | `/hackathons/{id}/rounds/{round_index}/teams/join-code` | student (leader) | Refresh join code |
 
-**Error codes:** `ROUND_NOT_PUBLISHED`, `ROUND_NOT_OPEN`, `ROUND_CLOSED`, `ROUND_NOT_FOUND`, `TEAM_INCOMPLETE`, `TEAM_NAME_REQUIRED`, `TEAM_REQUIRED`, `SOLO_HACKATHON`, `ALREADY_ENROLLED`, `INVALID_CODE`, `EXPIRED`, `TEAM_FULL`, `LEADER_ONLY`, `NOT_ENROLLED`.
+**Error codes:** `ROUND_NOT_PUBLISHED`, `ROUND_NOT_OPEN`, `ROUND_CLOSED`, `ROUND_NOT_FOUND`, `TEAM_INCOMPLETE`, `TEAM_NAME_REQUIRED`, `TEAM_REQUIRED`, `SOLO_HACKATHON`, `ALREADY_ENROLLED`, `ALREADY_SUBMITTED`, `TEAM_HAS_MEMBERS`, `INVALID_CODE`, `EXPIRED`, `TEAM_FULL`, `LEADER_ONLY`, `NOT_ENROLLED`, `HACKATHON_CLOSED`, `NOT_VISIBLE`.
 
 **Team complete gate:** for team rounds, the **leader cannot submit** until `team.member_count === team.max_members`. Participation returns `can_continue_to_demo: false`, `pending_action: "complete_team"`, `block_reason: "Please complete your team to move to demo video"`. Frontend should toast that message when the leader clicks **Continue to Demo**.
 

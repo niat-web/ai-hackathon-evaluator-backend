@@ -254,6 +254,8 @@ The Identity Toolkit ID token still expires in one hour and is only used to mint
 
 Pending evaluators may call `/auth/me`; other app routes return 403 until approved.
 
+`GET /admin/analysis/options`, `POST /admin/analysis/hackathons`, and `POST /admin/analysis/evaluators` are read-only. Admin and Super Admin can call them. A custom role needs the `analysis` permission. Counts are calculated when the filter changes and are not stored.
+
 ### Registration
 
 Student and evaluator share one registration flow (`VerificationService`). Super Admin turns email OTP and mobile OTP on or off together for both roles (`app_settings/registration`, default both on):
@@ -375,9 +377,10 @@ Per **hackathon + round index** (not per hackathon overall):
 - Single (`team_size_mode` `single`, or legacy `max_team_size == 1`): `POST …/enroll/solo`
 - Open (`team_size_mode` `open`): the same solo enroll, or a team of any size. The leader may submit with one or more members.
 - Team: leader `POST …/teams/create` (name + 6-digit join code) → members `POST …/teams/join`
-- `GET …/participation` drives the SPA (`can_submit`, `already_submitted`, `pending_action`, team completeness)
+- `GET …/participation` drives the SPA (`can_submit`, `already_submitted`, `pending_action`, `can_revert`, team completeness)
+- `POST …/enroll/revert` undoes Solo, team leader, or team member for that round only, and only while `can_revert` is true. A submission for the student or the team locks the choice. A leader with teammates gets `409 TEAM_HAS_MEMBERS` until those teammates revert.
 
-A leftover `role: solo` enrollment on a team round blocks `choose_role` until that enrollment is removed.
+A leftover `role: solo` enrollment on a team round blocks `choose_role` until that enrollment is removed. Revert is how the student removes it.
 
 ### 9.3 Submit once per round
 
