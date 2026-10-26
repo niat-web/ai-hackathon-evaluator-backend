@@ -269,7 +269,7 @@ Student and evaluator share one registration flow (`VerificationService`). Super
    from another university is `409 BATCH_UNIVERSITY_MISMATCH`. The user doc stores
    `university`, `university_id`, `university_location`, `batch_id`, `batch_name`,
    and `college_type` (`NIAT` or `Non NIAT`, copied from the university). A NIAT
-   university requires `niat_id` (`400 NIAT_ID_REQUIRED`, `409 NIAT_ID_TAKEN`).
+   university requires `niat_id` (`400 NIAT_ID_REQUIRED`, `409 NIAT_ID_TAKEN`). The id can be any length, including any number of digits.
    A Non NIAT university requires `college_id` (`400 COLLEGE_ID_REQUIRED`).
    That college id is unique only within the same university
    (`409 COLLEGE_ID_TAKEN`).

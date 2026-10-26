@@ -161,8 +161,10 @@ class RegisterCompleteRequest(BaseModel):
     niat_id: str | None = Field(
         None,
         min_length=1,
-        max_length=50,
-        description="Required when the selected university college_type is NIAT.",
+        description=(
+            "Required when the selected university college_type is NIAT. "
+            "Any length, including any number of digits."
+        ),
     )
     college_id: str | None = Field(
         None,

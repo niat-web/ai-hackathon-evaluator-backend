@@ -580,6 +580,41 @@ def test_college_id_is_unique_only_within_the_university():
     assert exc.value.code == "COLLEGE_ID_TAKEN"
 
 
+def test_niat_id_accepts_any_number_of_digits():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    session_id = _verified_session(service, firebase)
+    _niat_catalogue(firebase)
+    niat_id = "123456789012345678901234567890123456789012345678901234567890"
+    service.complete(
+        RegisterCompleteRequest(
+            session_id=session_id,
+            first_name="Ada",
+            last_name="Lovelace",
+            email="ada@example.com",
+            university_id="uni-niat",
+            batch_id="batch-2024",
+            niat_id=niat_id,
+            mobile_number="+919876543210",
+            password="secret12",
+        )
+    )
+    user = firebase.get_document("users", "new-student-uid")
+    assert user["niat_id"] == niat_id
+    short = RegisterCompleteRequest(
+        session_id=session_id,
+        first_name="Ada",
+        last_name="Lovelace",
+        email="ada@example.com",
+        university_id="uni-niat",
+        batch_id="batch-2024",
+        niat_id="7",
+        mobile_number="+919876543210",
+        password="secret12",
+    )
+    assert short.niat_id == "7"
+
+
 def test_niat_university_still_requires_niat_id():
     now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
     service, firebase, _ = _service(now)
