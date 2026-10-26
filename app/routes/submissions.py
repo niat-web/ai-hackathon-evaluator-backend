@@ -11,7 +11,7 @@ Student submission routes.
     POST   /submissions/admin/hackathons/{hackathon_id}/export/google-sheet -> admin: sync Google Sheet
     POST   /submissions/admin/hackathons/{hackathon_id}/assign-equally
            -> admin: randomly divide selected submissions among active evaluators
-    GET    /submissions/admin/all       -> admin lists all submissions
+    GET    /submissions/admin/all       -> admin count feed (no video URLs)
     GET    /submissions/evaluator/hackathons
            -> evaluator: hackathons with assigned submission counts
     GET    /submissions/evaluator/hackathons/{hackathon_id}
@@ -64,6 +64,7 @@ from app.models.submission_model import (
     DivideEquallyRequest,
     DivideEquallyResponse,
     EvaluateSubmissionRequest,
+    AdminSubmissionFeedItem,
     HackathonSubmissionSummary,
     PaginatedSubmissionsResponse,
     PrepareUploadRequest,
@@ -592,14 +593,21 @@ async def divide_submissions_equally(
     )
 
 
-@router.get("/admin/all", response_model=list[SubmissionResponse])
+@router.get("/admin/all", response_model=list[AdminSubmissionFeedItem])
 async def list_all_submissions_for_admin(
     admin: CurrentUser = Depends(get_admin_user),
     service: SubmissionService = Depends(get_submission_service),
-) -> list[SubmissionResponse]:
-    """Admin review queue: list every student submission."""
+) -> list[AdminSubmissionFeedItem]:
+    """
+    Count feed for the admin Submissions home.
+
+    A JSON array. Each row has ``hackathon_id``, ``status``, ``report_published``,
+    ``final_score``, and ``review_score``. It does not sign video URLs or join
+    analysis. Open one hackathon for the full rows.
+    """
+    _ = admin
     submissions = await run_sync(service.list_all_submissions)
-    return await _to_submission_responses(service, submissions, current_user=admin)
+    return [AdminSubmissionFeedItem(**item) for item in submissions]
 
 
 @router.get("/evaluator/hackathons", response_model=list[HackathonSubmissionSummary])

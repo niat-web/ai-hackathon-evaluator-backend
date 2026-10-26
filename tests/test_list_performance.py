@@ -111,9 +111,81 @@ def test_list_hackathons_summary_skips_full_theme_enrich():
         rows = svc.list_hackathons_with_submission_counts()
         assert len(rows) == 1
         assert rows[0]["submission_count"] == 2
+        assert rows[0]["evaluated_count"] == 0
         assert rows[0]["banner_url"] == "https://banner"
         svc.hackathon_service.enrich_hackathon_for_response.assert_not_called()
         svc.hackathon_service.enrich_hackathon_for_submission_summary.assert_called_once()
+
+
+def test_admin_all_feed_counts_without_signing_videos():
+    with patch.object(SubmissionService, "__init__", lambda self: None):
+        svc = SubmissionService()
+        svc.collection = "submissions"
+        svc.firebase = MagicMock()
+        svc._storage_client = MagicMock()
+        svc.firebase.get_collection.return_value = [
+            {
+                "id": "s1",
+                "hackathon_id": "h1",
+                "status": "completed",
+                "final_score": 90,
+                "created_at": "2026-10-02T00:00:00+05:30",
+                "video_path": "gs://bucket/video.mp4",
+                "problem_statement": "long",
+            },
+            {
+                "id": "s2",
+                "hackathon_id": "h1",
+                "status": "uploaded",
+                "report_published": True,
+                "created_at": "2026-10-03T00:00:00+05:30",
+            },
+            {
+                "id": "broken",
+                "hackathon_id": "h1",
+                "status": "not-a-status",
+                "created_at": "2026-10-01T00:00:00+05:30",
+            },
+            {"id": "orphan", "status": "uploaded"},
+        ]
+
+        rows = svc.list_all_submissions()
+
+    assert [item["id"] for item in rows] == ["s2", "s1", "broken"]
+    assert rows[0]["report_published"] is True
+    assert rows[1]["final_score"] == 90
+    assert rows[1]["status"] == "completed"
+    assert rows[2]["status"] == "uploaded"
+    assert "video_path" not in rows[0]
+    assert "problem_statement" not in rows[1]
+    svc._storage_client.assert_not_called()
+
+
+def test_hackathon_summary_counts_evaluated_rows():
+    with patch.object(SubmissionService, "__init__", lambda self: None):
+        svc = SubmissionService()
+        svc.collection = "submissions"
+        svc.firebase = MagicMock()
+        svc.hackathon_service = MagicMock()
+        svc.hackathon_service.list_hackathons.return_value = [
+            {"id": "h1", "name": "Hack", "start_date": "2026-01-01", "end_date": "2026-01-02"}
+        ]
+        svc.hackathon_service.enrich_hackathon_for_submission_summary.return_value = {
+            "id": "h1",
+            "name": "Hack",
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-02",
+        }
+        svc.firebase.get_collection.return_value = [
+            {"hackathon_id": "h1", "status": "completed"},
+            {"hackathon_id": "h1", "status": "uploaded", "final_score": 80},
+            {"hackathon_id": "h1", "status": "uploaded"},
+        ]
+
+        rows = svc.list_hackathons_with_submission_counts()
+
+    assert rows[0]["submission_count"] == 3
+    assert rows[0]["evaluated_count"] == 2
 
 
 def test_list_hackathons_evaluator_uses_query_not_full_scan():

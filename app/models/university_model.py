@@ -33,6 +33,20 @@ def normalize_college_type(value: str | None) -> CollegeType:
     return COLLEGE_TYPE_NIAT
 
 
+# Campus and batch headcount. 10,00,000 is the upper bound shown on the form.
+MIN_STUDENT_COUNT = 1
+MAX_STUDENT_COUNT = 1_000_000
+
+
+def stored_student_count(value: object) -> int | None:
+    """Return a saved headcount, or None when an older document has none."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < MIN_STUDENT_COUNT or value > MAX_STUDENT_COUNT:
+        return None
+    return value
+
+
 class UniversityCreateRequest(BaseModel):
     """Payload for creating a university."""
 
@@ -41,6 +55,12 @@ class UniversityCreateRequest(BaseModel):
     college_type: CollegeType = Field(
         COLLEGE_TYPE_NIAT,
         description='NIAT asks students for a NIAT ID. "Non NIAT" asks for a College ID.',
+    )
+    total_students: int = Field(
+        ...,
+        ge=MIN_STUDENT_COUNT,
+        le=MAX_STUDENT_COUNT,
+        description="Students on this campus, from 1 to 10,00,000.",
     )
 
     @field_validator("name", "location", mode="before")
@@ -55,6 +75,12 @@ class UniversityUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     location: Optional[str] = Field(None, min_length=1, max_length=200)
     college_type: Optional[CollegeType] = None
+    total_students: Optional[int] = Field(
+        None,
+        ge=MIN_STUDENT_COUNT,
+        le=MAX_STUDENT_COUNT,
+        description="Students on this campus, from 1 to 10,00,000.",
+    )
 
     @field_validator("name", "location", mode="before")
     @classmethod
@@ -72,6 +98,12 @@ class UniversityResponse(BaseModel):
     location: str
     display_label: str
     college_type: CollegeType = COLLEGE_TYPE_NIAT
+    total_students: Optional[int] = Field(
+        None,
+        ge=MIN_STUDENT_COUNT,
+        le=MAX_STUDENT_COUNT,
+        description="Students on this campus. Null on a campus saved before this field.",
+    )
     created_by: str
     created_at: ISTDateTime
     updated_at: ISTDateTime
@@ -86,6 +118,12 @@ class BatchCreateRequest(BaseModel):
         max_length=100,
         description='Label students pick, such as "2024-2028".',
     )
+    total_students: int = Field(
+        ...,
+        ge=MIN_STUDENT_COUNT,
+        le=MAX_STUDENT_COUNT,
+        description="Students in this batch, from 1 to 10,00,000.",
+    )
 
     @field_validator("name", mode="before")
     @classmethod
@@ -94,13 +132,21 @@ class BatchCreateRequest(BaseModel):
 
 
 class BatchUpdateRequest(BaseModel):
-    """Rename a batch. It stays on the same university."""
+    """Rename a batch or change its student count. It stays on the same university."""
 
-    name: str = Field(..., min_length=1, max_length=100)
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    total_students: Optional[int] = Field(
+        None,
+        ge=MIN_STUDENT_COUNT,
+        le=MAX_STUDENT_COUNT,
+        description="Students in this batch, from 1 to 10,00,000.",
+    )
 
     @field_validator("name", mode="before")
     @classmethod
-    def normalize_name(cls, value: str) -> str:
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return strip_required(value)
 
 
@@ -111,6 +157,12 @@ class BatchResponse(BaseModel):
     university_id: str
     university_name: str = ""
     name: str
+    total_students: Optional[int] = Field(
+        None,
+        ge=MIN_STUDENT_COUNT,
+        le=MAX_STUDENT_COUNT,
+        description="Students in this batch. Null on a batch saved before this field.",
+    )
     created_by: str
     created_at: ISTDateTime
     updated_at: ISTDateTime

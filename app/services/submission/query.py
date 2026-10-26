@@ -38,6 +38,31 @@ def admin_queue_round_index(submission: dict[str, Any]) -> int:
     return value or 0
 
 
+def _optional_score(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def admin_submission_feed_item(submission: dict[str, Any]) -> dict[str, Any] | None:
+    """Fields the admin submissions home needs to count one row."""
+    submission_id = str(submission.get("id") or "").strip()
+    hackathon_id = str(submission.get("hackathon_id") or "").strip()
+    if not submission_id or not hackathon_id:
+        return None
+    status = submission.get("status")
+    if status not in ADMIN_SUBMISSION_STATUSES:
+        status = "uploaded"
+    return {
+        "id": submission_id,
+        "hackathon_id": hackathon_id,
+        "status": status,
+        "report_published": bool(submission.get("report_published")),
+        "final_score": _optional_score(submission.get("final_score")),
+        "review_score": _optional_score(submission.get("review_score")),
+    }
+
+
 def submission_counts_as_evaluated(submission: dict[str, Any]) -> bool:
     """Match the admin round card: published, scored, or AI status completed."""
     if submission.get("report_published"):
@@ -311,11 +336,14 @@ class QueryMixin:
             submissions = self.firebase.get_collection(self.collection)
 
         counts: dict[str, int] = {}
+        evaluated_counts: dict[str, int] = {}
         for submission in submissions:
             hid = submission.get("hackathon_id")
             if not hid:
                 continue
             counts[hid] = counts.get(hid, 0) + 1
+            if submission_counts_as_evaluated(submission):
+                evaluated_counts[hid] = evaluated_counts.get(hid, 0) + 1
 
         summaries: list[dict[str, Any]] = []
         for hackathon in hackathons:
@@ -332,6 +360,7 @@ class QueryMixin:
                     "start_time": enriched.get("start_time") or "00:00",
                     "end_time": enriched.get("end_time") or "23:59",
                     "submission_count": count,
+                    "evaluated_count": evaluated_counts.get(enriched["id"], 0),
                     "banner_url": enriched.get("banner_url"),
                     "auto_ai_evaluation": bool(enriched.get("auto_ai_evaluation", False)),
                 }
@@ -400,10 +429,19 @@ class QueryMixin:
         return team_id in set(self._team_ids_for_student(student_id))
 
     def list_all_submissions(self) -> list[dict[str, Any]]:
-        """List every submission (admin review queue). Newest first."""
+        """Count feed for the admin submissions home. Newest first.
+
+        Returns only the fields that decide hackathon totals. Full submission
+        documents stay on the per-hackathon queue.
+        """
         submissions = self.firebase.get_collection(self.collection)
         submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return submissions
+        rows: list[dict[str, Any]] = []
+        for submission in submissions:
+            item = admin_submission_feed_item(submission)
+            if item is not None:
+                rows.append(item)
+        return rows
 
     def list_submissions_for_evaluator(self, evaluator_id: str) -> list[dict[str, Any]]:
         """List submissions assigned to a given evaluator. Newest first."""

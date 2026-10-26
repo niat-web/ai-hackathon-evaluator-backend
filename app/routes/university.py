@@ -53,7 +53,7 @@ async def create_university(
     admin: CurrentUser = Depends(get_admin_user),
     service: UniversityService = Depends(get_university_service),
 ) -> UniversityResponse:
-    """Create a university (name + location). Admin only."""
+    """Create a university (name, location, and total students). Admin only."""
     university = await run_sync(
         service.create_university, request=request, created_by=admin.user_id
     )
@@ -132,7 +132,7 @@ async def create_university_batch(
     admin: CurrentUser = Depends(get_admin_user),
     service: UniversityService = Depends(get_university_service),
 ) -> BatchResponse:
-    """Create a batch for one university. Admin only."""
+    """Create a batch for one university, including its student count. Admin only."""
     batch = await run_sync(
         service.create_batch,
         university_id,
@@ -153,7 +153,7 @@ async def update_university_batch(
     admin: CurrentUser = Depends(get_admin_user),
     service: UniversityService = Depends(get_university_service),
 ) -> BatchResponse:
-    """Rename a batch. It stays on the same university. Admin only."""
+    """Rename a batch or change its student count. It stays on the same university. Admin only."""
     _ = admin
     batch = await run_sync(service.update_batch, university_id, batch_id, request)
     return BatchResponse(**batch)

@@ -51,6 +51,14 @@ class HackathonSubmissionSummary(BaseModel):
     start_time: str = "00:00"
     end_time: str = "23:59"
     submission_count: int
+    evaluated_count: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Submissions that count as evaluated: the report is published, "
+            "a final score is set, or the AI status is completed."
+        ),
+    )
     banner_url: Optional[str] = None
     auto_ai_evaluation: bool = Field(
         False,
@@ -67,6 +75,21 @@ class HackathonSubmissionSummary(BaseModel):
         None,
         description="Last Google Sheets export sync time (admin UI only).",
     )
+
+
+class AdminSubmissionFeedItem(BaseModel):
+    """One row of GET /submissions/admin/all, used only to count the home screen.
+
+    The per-hackathon table loads full submissions separately. This row omits
+    video URLs, answers, and analysis so the count call stays small.
+    """
+
+    id: str
+    hackathon_id: str
+    status: SubmissionStatus
+    report_published: bool = False
+    final_score: Optional[float] = None
+    review_score: Optional[float] = None
 
 
 class SubmissionRoundSummary(BaseModel):

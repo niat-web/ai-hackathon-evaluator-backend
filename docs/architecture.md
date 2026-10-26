@@ -309,8 +309,8 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 | `submissions` | submission id | Student work, scorecard, review, GitHub AI |
 | `analysis` | submission id | Gemini video result (report, checklist, scores) |
 | `themes` | theme id | Problem catalogue |
-| `universities` | university id | Admin-created university (name, location, `college_type` `NIAT` or `Non NIAT`). A missing type is treated as NIAT |
-| `batches` | batch id | Batch name scoped to one `university_id`. Register only lists that university's batches. |
+| `universities` | university id | Admin-created university (name, location, `college_type` `NIAT` or `Non NIAT`, `total_students` from 1 to 10,00,000). A missing type is treated as NIAT. A campus saved before the count has `total_students: null` |
+| `batches` | batch id | Batch name and `total_students` scoped to one `university_id`. Register only lists that university's batches. A batch saved before the count has `total_students: null` |
 | `evaluation_requirements` | requirement id | Rubric / form fields |
 | `ai_evaluation_prompts` | prompt key | Gemini prompt templates |
 | `ai_evaluation_metric_scoring` | scoring id | Metric scoring config |
