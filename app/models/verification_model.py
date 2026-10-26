@@ -73,6 +73,20 @@ class RegisterStartResponse(BaseModel):
     session_id: str
 
 
+class AccountVerificationStartResponse(BaseModel):
+    """OTP session for a signed-in student or evaluator asked to verify."""
+
+    session_id: str
+    email: str
+    mobile_number: str = ""
+    email_required: bool = False
+    mobile_required: bool = False
+
+
+class AccountVerificationCompleteRequest(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=80)
+
+
 class EmailSendOtpRequest(BaseModel):
     session_id: str = Field(..., min_length=8, max_length=80)
     email: EmailStr
@@ -138,7 +152,24 @@ class RegisterCompleteRequest(BaseModel):
         max_length=200,
         description="Ignored; name is taken from the selected university",
     )
-    niat_id: str = Field(..., min_length=1, max_length=50)
+    batch_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Id from GET /universities/{university_id}/batches",
+    )
+    niat_id: str | None = Field(
+        None,
+        min_length=1,
+        max_length=50,
+        description="Required when the selected university college_type is NIAT.",
+    )
+    college_id: str | None = Field(
+        None,
+        min_length=1,
+        max_length=50,
+        description='Required when the selected university college_type is "Non NIAT".',
+    )
     mobile_number: str = Field(..., min_length=8, max_length=20)
     password: str = Field(..., min_length=8, max_length=128)
     confirm_password: str | None = Field(None, min_length=8, max_length=128)
@@ -148,11 +179,18 @@ class RegisterCompleteRequest(BaseModel):
         "first_name",
         "last_name",
         "university_id",
-        "niat_id",
+        "batch_id",
         mode="before",
     )
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("niat_id", "college_id", mode="before")
+    @classmethod
+    def normalize_optional_student_id(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return None
         return strip_required(value)
 
     @field_validator("email", mode="before")
@@ -276,6 +314,61 @@ class ForgotPasswordResetRequest(BaseModel):
 class ForgotPasswordResetResponse(BaseModel):
     message: str
     email: str
+
+
+class StaffProfileStartRequest(BaseModel):
+    """First login: verify the account email and a new mobile number."""
+
+    email: EmailStr
+    mobile_number: str = Field(..., min_length=8, max_length=20)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return strip_required(value).lower()
+
+    @field_validator("mobile_number")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return normalize_e164(value)
+
+
+class StaffProfileStartResponse(BaseModel):
+    session_id: str
+
+
+class StaffProfileCompleteRequest(BaseModel):
+    """Save employee ID after the same email OTP and phone checks succeed."""
+
+    session_id: str = Field(..., min_length=8, max_length=80)
+    email: EmailStr
+    mobile_number: str = Field(..., min_length=8, max_length=20)
+    employee_id: str = Field(..., min_length=1, max_length=50)
+
+    @field_validator("session_id", "employee_id", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return strip_required(value).lower()
+
+    @field_validator("mobile_number")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return normalize_e164(value)
+
+
+class StaffProfileCompleteResponse(BaseModel):
+    message: str
+    profile_completed: bool = True
+    email: str
+    mobile_no: str
+    employee_id: str
+    email_verified: bool = True
+    phone_verified: bool = True
 
 
 class VerificationOkResponse(BaseModel):

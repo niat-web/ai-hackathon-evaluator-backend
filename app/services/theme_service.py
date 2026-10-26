@@ -3,12 +3,12 @@ Theme service — admin-created reusable hackathon themes.
 """
 
 import logging
-import uuid
 from typing import Any
-from app.utils.time import now_ist_iso
 
 from app.models.theme_model import ThemeCreateRequest, ThemeUpdateRequest
 from app.services.firebase import FirebaseService
+from app.utils.ids import new_id
+from app.utils.time import now_ist_iso
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class ThemeService:
         created_by: str,
     ) -> dict[str, Any]:
         """Create a theme document."""
-        theme_id = uuid.uuid4().hex
+        theme_id = new_id()
         now = now_ist_iso()
         document = {
             "name": request.name.strip(),

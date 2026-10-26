@@ -1828,8 +1828,8 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
 
 Use `apiFetch` for **all** authenticated calls, including:
 
-- `POST /admin/settings/change-profile-password`
-- `POST /admin/settings/reset-database`
+- `POST /super-admin/settings/change-profile-password`
+- `POST /super-admin/settings/reset-database`
 - `POST /auth/change-password`
 - submissions, hackathons, uploads metadata, etc.
 

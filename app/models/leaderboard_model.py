@@ -19,9 +19,20 @@ class PublishLeaderboardRequest(BaseModel):
     notify: Optional[bool] = Field(
         None,
         description=(
-            "Email ranked candidates. Default true on first publish, false when "
-            "the leaderboard is already published or when unpublishing."
+            "Ignored. Publishing the leaderboard does not send email. "
+            "Winner emails use the winner announcement."
         ),
+    )
+
+
+class AnnounceWinnersRequest(BaseModel):
+    """How many places the Super Admin is announcing."""
+
+    top_n: int = Field(
+        ...,
+        ge=1,
+        le=100,
+        description="1 announces the winner only. 10 announces the top 10. Ties at the cutoff are included.",
     )
 
 
@@ -77,4 +88,37 @@ class LeaderboardResponse(BaseModel):
 
 
 class PublishLeaderboardResponse(LeaderboardResponse):
-    """Same payload as GET leaderboard, plus ``notified_count`` from this action."""
+    """Same payload as GET leaderboard. ``notified_count`` stays 0."""
+
+
+class WinnerEntry(BaseModel):
+    rank: int
+    rank_label: str
+    place_label: str = Field(
+        ...,
+        description="Winner (1st prize), 1st runner-up (2nd prize), 2nd runner-up, or 4th, 5th, …",
+    )
+    score: float
+    team_name: str
+    candidate_name: str
+
+
+class WinnerAnnouncementRecord(BaseModel):
+    top_n: int
+    announced_count: int
+    emails_sent: int = 0
+    announced_at: OptionalISTDateTime = None
+    announced_by: Optional[str] = None
+
+
+class WinnerAnnouncementResponse(BaseModel):
+    hackathon_id: str
+    hackathon_name: str
+    round_index: int
+    round_title: str
+    top_n: int
+    announced_count: int
+    emails_sent: int = 0
+    entries: list[WinnerEntry] = Field(default_factory=list)
+    last_announcement: Optional[WinnerAnnouncementRecord] = None
+    message: str = ""

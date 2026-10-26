@@ -6,7 +6,6 @@ from app.utils.time import now_ist_iso
 import json
 import logging
 import re
-import uuid
 from typing import Any
 
 from google import genai
@@ -23,6 +22,7 @@ from app.services.submission.prompts import (
     scoring_prompt_has_theme_context,
     scoring_prompt_theme_preamble,
 )
+from app.utils.ids import new_id
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class AnalysisMixin:
         Uses a Firestore transaction so two concurrent evaluate calls cannot
         both move the same submission into ``processing`` / overwrite analysis_id.
         """
-        analysis_id = uuid.uuid4().hex
+        analysis_id = new_id()
         now = now_ist_iso()
         criteria = evaluation_criteria.strip() if evaluation_criteria else None
 

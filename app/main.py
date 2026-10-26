@@ -9,7 +9,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.middleware.activity_middleware import ActivityLogMiddleware
 from app.routes import (
+    access,
+    activity,
     admin,
     auth,
     evaluation_prompt,
@@ -95,6 +98,7 @@ app = FastAPI(
 )
 
 # CORS: credentials + explicit origins; methods/headers match SPA preflights.
+app.add_middleware(ActivityLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_origins(),
@@ -122,6 +126,8 @@ async def health_check():
 # Include routers
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(access.router)
+app.include_router(activity.router)
 app.include_router(settings.router)
 app.include_router(submissions.router)
 app.include_router(hackathon.router)

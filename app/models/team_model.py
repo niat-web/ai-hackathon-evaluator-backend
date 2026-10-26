@@ -51,7 +51,7 @@ class HackathonTeamResponse(BaseModel):
     round_title: str
     team_name: str
     leader_id: str
-    max_members: int
+    max_members: int | None = None
     member_count: int
     members: list[TeamMemberSummary]
     is_full: bool
@@ -71,7 +71,8 @@ class HackathonParticipationResponse(BaseModel):
     hackathon_id: str
     round_index: int
     round_title: str
-    max_team_size: int
+    team_size_mode: Literal["single", "multi", "open"] = "single"
+    max_team_size: int | None = None
     min_team_size: int = 1
     team_mode_label: str
     working_demo_video_required: bool = True
@@ -93,6 +94,8 @@ class HackathonParticipationResponse(BaseModel):
             "create_or_join",
             "complete_team",
             "round_not_open",
+            "hackathon_not_open",
+            "hackathon_closed",
             "already_submitted",
             "ready",
         ]

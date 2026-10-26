@@ -23,7 +23,7 @@ from app.services.hackathon_service import HackathonService
 from app.services.submission.base import SubmissionServiceBase
 from app.services.team_service import TEAMS
 from app.services.user_service import UserService
-from app.utils.hackathon_round import normalize_max_team_size, round_title
+from app.utils.hackathon_round import resolve_team_bounds, round_title
 from app.utils.time import now_ist_iso
 
 
@@ -38,6 +38,8 @@ EXPORT_COLUMNS: tuple[str, ...] = (
     "Submitter Name",
     "Submitter Email",
     "Submitter NIAT ID",
+    "Submitter College ID",
+    "Submitter College Type",
     "Submitter Mobile",
     "Submitter University",
     "Member 1 Name",
@@ -52,6 +54,13 @@ EXPORT_COLUMNS: tuple[str, ...] = (
     "Member 4 Name",
     "Member 4 Email",
     "Member 4 Role",
+    "Member 5 Name",
+    "Member 5 Email",
+    "Member 5 Role",
+    "Member 6 Name",
+    "Member 6 Email",
+    "Member 6 Role",
+    "Additional Members",
     "Theme ID",
     "Theme Name",
     "Problem Statement",
@@ -101,9 +110,7 @@ class HackathonExportService:
         user_service: UserService | None = None,
     ):
         self.firebase = firebase or FirebaseService()
-        self.hackathon_service = hackathon_service or HackathonService(
-            firebase=self.firebase
-        )
+        self.hackathon_service = hackathon_service or HackathonService(firebase=self.firebase)
         self.user_service = user_service or UserService(firebase=self.firebase)
         self.submissions_collection = SubmissionServiceBase.collection
 
@@ -156,9 +163,7 @@ class HackathonExportService:
         if not timeline:
             rows = [
                 self._build_row(submission, hackathon, 0)
-                for submission in sorted(
-                    submissions, key=lambda item: item.get("created_at") or ""
-                )
+                for submission in sorted(submissions, key=lambda item: item.get("created_at") or "")
             ]
             sheets.append(
                 ExportSheetData(
@@ -201,14 +206,14 @@ class HackathonExportService:
             hackathon_id.strip(),
         )
 
-    def _summary_rows(
-        self, hackathon: dict[str, Any], export_count: int
-    ) -> list[list[Any]]:
+    def _summary_rows(self, hackathon: dict[str, Any], export_count: int) -> list[list[Any]]:
         return [
             ["Hackathon", hackathon.get("name") or ""],
             ["Hackathon ID", hackathon.get("id") or ""],
             ["Start Date", hackathon.get("start_date") or ""],
+            ["Start Time (IST)", hackathon.get("start_time") or "00:00"],
             ["End Date", hackathon.get("end_date") or ""],
+            ["End Time (IST)", hackathon.get("end_time") or "23:59"],
             ["Exported At (IST)", now_ist_iso()],
             ["Total Submissions Exported", export_count],
             [
@@ -239,9 +244,9 @@ class HackathonExportService:
         hackathon: dict[str, Any],
         round_index: int,
     ) -> list[Any]:
-        _, round_title_text, max_team_size = self._round_meta(hackathon, round_index)
+        _, round_title_text, bounds = self._round_meta(hackathon, round_index)
         team_doc, team_id = self._load_team(submission.get("hackathon_team_id"))
-        participation_mode = "Solo" if max_team_size <= 1 else "Team"
+        participation_mode = "Solo" if bounds.mode == "single" else "Team"
 
         submitter = self._profile(submission.get("student_id"))
         team_name = str(submission.get("team_name") or "").strip()
@@ -252,7 +257,7 @@ class HackathonExportService:
 
         members = self._team_members(team_doc, submitter, participation_mode)
         member_cells: list[str] = []
-        for slot in range(4):
+        for slot in range(6):
             if slot < len(members):
                 member_cells.extend(
                     [
@@ -263,15 +268,20 @@ class HackathonExportService:
                 )
             else:
                 member_cells.extend(["", "", ""])
+        extra_members = members[6:]
+        member_cells.append(
+            "; ".join(
+                f"{member.get('name') or ''} <{member.get('email') or ''}>"
+                for member in extra_members
+            )
+        )
 
         field_answers = submission.get("field_answers") or {}
         if not isinstance(field_answers, dict):
             field_answers = {}
 
         problem = self._submission_text(submission, field_answers, "problem_statement")
-        solution = self._submission_text(
-            submission, field_answers, "solution_description"
-        )
+        solution = self._submission_text(submission, field_answers, "solution_description")
         mvp_link = self._submission_text(submission, field_answers, "mvp_link")
         github_link = self._submission_text(
             submission,
@@ -304,6 +314,8 @@ class HackathonExportService:
             submitter.get("name") if submitter else "",
             submitter.get("email") if submitter else "",
             submitter.get("niat_id") if submitter else "",
+            submitter.get("college_id") if submitter else "",
+            submitter.get("college_type") if submitter else "",
             submitter.get("mobile_no") if submitter else "",
             submitter.get("university") if submitter else "",
             *member_cells,
@@ -370,22 +382,17 @@ class HackathonExportService:
     def _yes_no(value: Any) -> str:
         return "Yes" if bool(value) else "No"
 
-    def _round_meta(
-        self, hackathon: dict[str, Any], round_index: int
-    ) -> tuple[dict[str, Any], str, int]:
+    def _round_meta(self, hackathon: dict[str, Any], round_index: int):
         timeline = hackathon.get("timeline") or []
         if round_index < 0 or round_index >= len(timeline):
-            return {}, f"Round {round_index + 1}", 1
+            return {}, f"Round {round_index + 1}", resolve_team_bounds({"max_team_size": 1})
         round_ = timeline[round_index]
         if not isinstance(round_, dict):
             round_ = dict(round_)
         title = str(round_.get("title") or f"Round {round_index + 1}")
-        max_size = normalize_max_team_size(round_.get("max_team_size", 1))
-        return round_, title, max_size
+        return round_, title, resolve_team_bounds(round_)
 
-    def _load_team(
-        self, team_id: str | None
-    ) -> tuple[dict[str, Any] | None, str | None]:
+    def _load_team(self, team_id: str | None) -> tuple[dict[str, Any] | None, str | None]:
         if not team_id:
             return None, None
         doc = self.firebase.get_document(TEAMS, str(team_id))

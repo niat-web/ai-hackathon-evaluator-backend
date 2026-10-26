@@ -1,5 +1,6 @@
 """Admin hackathon queue: one page, filters, and unfiltered round totals."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -115,6 +116,45 @@ def test_missing_round_index_counts_as_round_zero():
     assert page["round_summary"] == [{"round_index": 0, "total": 1, "evaluated": 0}]
 
 
+def test_review_status_filters_every_page_and_treats_a_blank_as_none():
+    docs = [
+        _doc("blank", created_at="2026-09-01T10:00:00", status="completed"),
+        _doc("waiting", created_at="2026-09-02T10:00:00", status="completed"),
+        _doc("approved", created_at="2026-09-03T10:00:00", status="completed"),
+        _doc("changes", created_at="2026-09-04T10:00:00", status="completed"),
+    ]
+    docs[1]["review_status"] = "pending_review"
+    docs[2]["review_status"] = "approved"
+    docs[3]["review_status"] = "changes_requested"
+    service = _service(docs)
+
+    pending = service.paginate_hackathon_submissions(
+        "h1",
+        page=1,
+        page_size=10,
+        review_status="none",
+        status="completed",
+    )
+    assert [item["id"] for item in pending["items"]] == ["blank"]
+    assert pending["total"] == 1
+    assert len(pending["round_summary"]) == 1
+    assert pending["round_summary"][0]["total"] == 4
+
+    admin_review = service.paginate_hackathon_submissions(
+        "h1",
+        page=1,
+        page_size=10,
+        review_status="pending_review",
+    )
+    assert [item["id"] for item in admin_review["items"]] == ["waiting"]
+
+
+def test_unknown_review_status_is_rejected():
+    service = _service([])
+    with pytest.raises(ValueError, match="review_status"):
+        service.paginate_hackathon_submissions("h1", page=1, page_size=10, review_status="open")
+
+
 def test_page_past_the_end_is_empty_with_the_real_total():
     docs = [_doc(f"s{i}", created_at=f"2026-09-{i + 1:02d}T10:00:00") for i in range(12)]
     service = _service(docs)
@@ -181,6 +221,7 @@ def test_page_query_returns_an_object_and_a_bare_get_stays_a_list():
                     "page_size": 10,
                     "round_index": 0,
                     "status": "uploaded",
+                    "review_status": "pending_review",
                     "q": "raja",
                 },
             )
@@ -200,6 +241,9 @@ def test_page_query_returns_an_object_and_a_bare_get_stays_a_list():
     assert body["page_size"] == 10
     assert body["items"][0]["id"] == "s1"
     assert body["round_summary"] == [{"round_index": 0, "total": 37, "evaluated": 4}]
+    assert service.paginate_hackathon_submissions.call_args.kwargs["review_status"] == (
+        "pending_review"
+    )
     assert isinstance(bare.json(), list)
     assert bare.json()[0]["id"] == "s1"
     assert too_big.status_code == 422

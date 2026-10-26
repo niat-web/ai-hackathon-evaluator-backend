@@ -5,7 +5,6 @@ Admin hackathon creation drafts — section-by-section save, resume later, publi
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
 from pydantic import ValidationError
@@ -22,6 +21,10 @@ from app.models.hackathon_model import (
 )
 from app.services.firebase import FirebaseService
 from app.services.hackathon_service import HackathonService
+from app.utils.ids import new_id
+from app.utils.hackathon_round import normalize_max_submissions
+from app.utils.hackathon_schedule import apply_window_times
+from app.utils.hackathon_visibility import normalize_visibility
 from app.utils.time import now_ist_iso
 
 
@@ -44,11 +47,54 @@ class HackathonDraftService:
         created_by: str,
         request: HackathonDraftUpdateRequest | None = None,
     ) -> dict[str, Any]:
-        draft_id = uuid.uuid4().hex
+        draft_id = new_id()
         now = now_ist_iso()
         doc = self._empty_draft_doc(created_by, now)
         if request:
             doc.update(self._extract_updates(request))
+        self.firebase.set_document(self.collection, draft_id, doc)
+        return self._to_response(draft_id, doc)
+
+    def duplicate_hackathon(self, hackathon_id: str, created_by: str) -> dict[str, Any]:
+        """
+        Open a wizard draft filled from an existing hackathon.
+
+        The admin edits it and publishes when ready. Rounds are unpublished,
+        so students do not see the copy. Submissions, teams, and scores stay
+        on the original.
+        """
+        source = self.hackathon_service.get_hackathon(hackathon_id)
+        if not source:
+            raise NotFoundError("Hackathon not found", code="HACKATHON_NOT_FOUND")
+
+        draft_id = new_id()
+        now = now_ist_iso()
+        source_name = str(source.get("name") or "").strip() or "Hackathon"
+        doc = self._empty_draft_doc(created_by, now)
+        doc.update(
+            {
+                "current_step": "review",
+                "completed_steps": list(DRAFT_STEPS),
+                "name": self._copy_name(source_name),
+                "description": source.get("description"),
+                "start_date": source.get("start_date"),
+                "end_date": source.get("end_date"),
+                "start_time": source.get("start_time"),
+                "end_time": source.get("end_time"),
+                "guidelines": source.get("guidelines"),
+                "evaluator_guidelines": source.get("evaluator_guidelines"),
+                "hackathon_url": source.get("hackathon_url"),
+                "theme_ids": list(source.get("theme_ids") or []),
+                "timeline": self._copy_timeline(source.get("timeline") or []),
+                "prizes": source.get("prizes") if isinstance(source.get("prizes"), dict) else None,
+                "source_hackathon_id": hackathon_id,
+                "source_hackathon_name": source_name,
+                "copied_settings": self._copied_settings(source),
+            }
+        )
+        banner_path = self._copy_banner(draft_id, source.get("banner_path"))
+        if banner_path:
+            doc["banner_path"] = banner_path
         self.firebase.set_document(self.collection, draft_id, doc)
         return self._to_response(draft_id, doc)
 
@@ -117,6 +163,7 @@ class HackathonDraftService:
             created_by=admin_user_id,
             banner=banner_bytes,
         )
+        hackathon = self._apply_copied_settings(hackathon, doc.get("copied_settings"))
         self.firebase.delete_document(self.collection, draft_id)
         return hackathon
 
@@ -137,6 +184,8 @@ class HackathonDraftService:
             "description": None,
             "start_date": None,
             "end_date": None,
+            "start_time": None,
+            "end_time": None,
             "guidelines": None,
             "evaluator_guidelines": None,
             "hackathon_url": None,
@@ -158,6 +207,8 @@ class HackathonDraftService:
             "description",
             "start_date",
             "end_date",
+            "start_time",
+            "end_time",
             "guidelines",
             "evaluator_guidelines",
             "hackathon_url",
@@ -215,6 +266,8 @@ class HackathonDraftService:
                 description=str(doc["description"]).strip(),
                 start_date=str(doc["start_date"]),
                 end_date=str(doc["end_date"]),
+                start_time=doc.get("start_time"),
+                end_time=doc.get("end_time"),
                 guidelines=str(doc["guidelines"]).strip(),
                 evaluator_guidelines=str(doc["evaluator_guidelines"]).strip(),
                 theme_ids=list(theme_ids),
@@ -224,6 +277,96 @@ class HackathonDraftService:
             )
         except (ValidationError, ValueError, TypeError) as exc:
             raise BadRequestError(str(exc), code="DRAFT_INVALID") from exc
+
+    @staticmethod
+    def _copy_name(name: str) -> str:
+        suffix = " (copy)"
+        if len(name) + len(suffix) <= 200:
+            return f"{name}{suffix}"
+        return f"{name[: 200 - len(suffix)].rstrip()}{suffix}"
+
+    @staticmethod
+    def _copy_timeline(timeline: list[Any]) -> list[dict[str, Any]]:
+        kept = (
+            "title",
+            "description",
+            "start_date",
+            "end_date",
+            "start_time",
+            "end_time",
+            "evaluation_requirement_id",
+            "team_size_mode",
+            "min_team_size",
+            "max_team_size",
+            "working_demo_video_required",
+            "auto_ai_evaluation",
+            "github_ai_evaluation",
+        )
+        copied: list[dict[str, Any]] = []
+        for round_ in timeline:
+            if not isinstance(round_, dict):
+                continue
+            item = {key: round_[key] for key in kept if key in round_}
+            item["published"] = False
+            item["published_at"] = None
+            item["published_by"] = None
+            item["leaderboard_published"] = False
+            item["leaderboard_published_at"] = None
+            item["leaderboard_published_by"] = None
+            copied.append(item)
+        return copied
+
+    @staticmethod
+    def _copied_settings(source: dict[str, Any]) -> dict[str, Any]:
+        """Settings the wizard does not edit, applied when the copy is published."""
+        prompts = source.get("video_analysis_prompts")
+        settings: dict[str, Any] = {
+            "visibility": normalize_visibility(source),
+            "max_submissions": normalize_max_submissions(source.get("max_submissions")),
+            "auto_publish_reports": bool(source.get("auto_publish_reports")),
+        }
+        if "evaluator_ids" in source:
+            settings["evaluator_ids"] = list(source.get("evaluator_ids") or [])
+        if isinstance(prompts, dict) and prompts:
+            settings["video_analysis_prompts"] = prompts
+        return settings
+
+    def _apply_copied_settings(
+        self,
+        hackathon: dict[str, Any],
+        settings: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(settings, dict):
+            return hackathon
+        hackathon_id = str(hackathon.get("id") or "")
+        if not hackathon_id:
+            return hackathon
+        update: dict[str, Any] = {
+            "visibility": settings.get("visibility") or normalize_visibility({}),
+            "max_submissions": normalize_max_submissions(settings.get("max_submissions")),
+            "auto_publish_reports": bool(settings.get("auto_publish_reports")),
+            "updated_at": now_ist_iso(),
+        }
+        if "evaluator_ids" in settings:
+            update["evaluator_ids"] = list(settings.get("evaluator_ids") or [])
+        prompts = settings.get("video_analysis_prompts")
+        if isinstance(prompts, dict) and prompts:
+            update["video_analysis_prompts"] = prompts
+        if self.firebase.get_document(self.hackathon_service.collection, hackathon_id):
+            self.firebase.update_document(self.hackathon_service.collection, hackathon_id, update)
+        return {**hackathon, **update}
+
+    def _copy_banner(self, draft_id: str, banner_path: str | None) -> str | None:
+        if not banner_path:
+            return None
+        try:
+            banner = self._read_banner_bytes(banner_path)
+            if not banner:
+                return None
+            return self._upload_draft_banner(draft_id, banner)
+        except Exception:
+            logger.warning("Could not copy hackathon banner onto draft %s", draft_id)
+            return None
 
     def _upload_draft_banner(self, draft_id: str, banner: tuple[str, bytes, str]) -> str:
         return self.hackathon_service._upload_banner(f"drafts/{draft_id}", banner)
@@ -251,6 +394,14 @@ class HackathonDraftService:
         data.setdefault("completed_steps", [])
         data.setdefault("theme_ids", [])
         data.setdefault("timeline", [])
+        apply_window_times(data)
+        rounds: list[Any] = []
+        for round_ in data.get("timeline") or []:
+            if isinstance(round_, dict):
+                rounds.append(apply_window_times(dict(round_)))
+            else:
+                rounds.append(round_)
+        data["timeline"] = rounds
 
         try:
             self.hackathon_service.attach_banner_url(

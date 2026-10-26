@@ -14,10 +14,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import uuid
 from typing import Any, Literal
 
 from fastapi import BackgroundTasks
+
+from app.utils.ids import new_id
 
 
 logger = logging.getLogger(__name__)
@@ -32,11 +33,7 @@ class EvaluationJobService:
         self,
         submission_service: "SubmissionService | None" = None,
     ) -> None:
-        self.project = (
-            os.getenv("GOOGLE_CLOUD_PROJECT")
-            or os.getenv("FIREBASE_PROJECT_ID")
-            or ""
-        )
+        self.project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID") or ""
         self.location = os.getenv("CLOUD_TASKS_LOCATION", "asia-south1")
         self.queue = os.getenv("CLOUD_TASKS_QUEUE", "").strip()
         self.target_url = os.getenv("CLOUD_TASKS_TARGET_URL", "").strip()
@@ -96,8 +93,7 @@ class EvaluationJobService:
             evaluation_criteria=evaluation_criteria,
         )
         logger.info(
-            "Scheduled in-process BackgroundTask for submission %s "
-            "(Cloud Tasks not configured)",
+            "Scheduled in-process BackgroundTask for submission %s " "(Cloud Tasks not configured)",
             submission_id,
         )
 
@@ -117,9 +113,7 @@ class EvaluationJobService:
             self.enqueue_cloud_task(submission_id, evaluation_criteria)
             return "cloud_tasks"
         if background_tasks is None:
-            raise ValueError(
-                "BackgroundTasks is required when Cloud Tasks is not configured"
-            )
+            raise ValueError("BackgroundTasks is required when Cloud Tasks is not configured")
         self.enqueue_background(submission_id, evaluation_criteria, background_tasks)
         return "background"
 
@@ -139,13 +133,8 @@ class EvaluationJobService:
             raise ValueError("Submission not found")
 
         analysis_id = submission.get("analysis_id")
-        if (
-            submission.get("status") == "completed"
-            and analysis_id
-        ):
-            analysis = service.firebase.get_document(
-                service.analysis_collection, analysis_id
-            )
+        if submission.get("status") == "completed" and analysis_id:
+            analysis = service.firebase.get_document(service.analysis_collection, analysis_id)
             if analysis and analysis.get("status") == "completed":
                 logger.info(
                     "Skipping evaluation job for %s — already completed",
@@ -186,7 +175,7 @@ class EvaluationJobService:
 
         # Unique task id per enqueue so re-evaluate after completion is allowed.
         # Concurrent double-click is still blocked by status=processing → 409.
-        task_id = f"eval-{submission_id[:32]}-{uuid.uuid4().hex[:16]}"
+        task_id = f"eval-{submission_id[:32]}-{new_id()}"
 
         # Cloud Tasks max HTTP dispatch deadline is 30 minutes.
         dispatch_deadline = duration_pb2.Duration(seconds=1800)

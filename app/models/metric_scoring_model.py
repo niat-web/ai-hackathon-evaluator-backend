@@ -476,6 +476,15 @@ class ScoringSetupResponse(BaseModel):
             "solution_description, {Problem Statement} for solution rubrics)."
         ),
     )
+    manual_metrics: list[FieldScoringMetric] = Field(
+        default_factory=list,
+        description=(
+            "Editable starter scorecard for this requirement. One metric per "
+            "requirement field, plus Video Explanation. Known fields use the "
+            "same AI prompts and manual segments as the standard scorecard. "
+            "Not saved until PUT metric-scoring."
+        ),
+    )
 
 
 # Rebuild once EvaluationRequirementResponse is importable at runtime.

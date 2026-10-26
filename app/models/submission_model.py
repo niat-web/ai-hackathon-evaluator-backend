@@ -48,6 +48,8 @@ class HackathonSubmissionSummary(BaseModel):
     name: str
     start_date: str
     end_date: str
+    start_time: str = "00:00"
+    end_time: str = "23:59"
     submission_count: int
     banner_url: Optional[str] = None
     auto_ai_evaluation: bool = Field(
@@ -89,14 +91,17 @@ class PaginatedSubmissionsResponse(BaseModel):
     total: int = Field(
         ...,
         ge=0,
-        description="How many submissions match the current round, status, and search.",
+        description=(
+            "How many submissions match the current round, AI status, review status, and search."
+        ),
     )
     page: int = Field(..., ge=1)
     page_size: int = Field(..., ge=1, le=100)
     round_summary: list[SubmissionRoundSummary] = Field(
         default_factory=list,
         description=(
-            "Per-round totals for the round cards and header. " "Not affected by status or search."
+            "Per-round totals for the round cards and header. "
+            "Not affected by status, review status, or search."
         ),
     )
 
@@ -193,6 +198,13 @@ class SubmissionResponse(BaseModel):
     assigned_evaluator_name: Optional[str] = None
     assigned_at: OptionalISTDateTime = None
     assigned_by: Optional[str] = None
+    assignment_history: list["AssignmentHistoryEntry"] = Field(
+        default_factory=list,
+        description=(
+            "Every evaluator assignment change, oldest first. "
+            "A first assignment has from_evaluator_id null and no reason."
+        ),
+    )
     analyzed_by: Optional[str] = Field(
         None,
         description="User id of the admin/evaluator who started AI analysis.",
@@ -528,6 +540,30 @@ class WithdrawSubmissionResponse(BaseModel):
     withdrawn: bool = True
 
 
+class AssignmentHistoryEntry(BaseModel):
+    """One evaluator assignment change. Entries are appended and never rewritten."""
+
+    changed_at: ISTDateTime
+    changed_by_id: str
+    changed_by_name: str = ""
+    from_evaluator_id: Optional[str] = None
+    from_evaluator_name: Optional[str] = None
+    to_evaluator_id: Optional[str] = None
+    to_evaluator_name: Optional[str] = None
+    reason: Optional[str] = Field(
+        None,
+        description="Why the assigned evaluator was changed. Empty on a first assignment.",
+    )
+    evaluation_submitted: bool = Field(
+        False,
+        description=(
+            "True when the previous evaluator had already submitted: "
+            "a final score exists, or review_status is pending_review, "
+            "changes_requested, or approved."
+        ),
+    )
+
+
 class AssignEvaluatorRequest(BaseModel):
     """Assign (or clear) a single submission's evaluator."""
 
@@ -535,6 +571,19 @@ class AssignEvaluatorRequest(BaseModel):
         None,
         description="Approved evaluator user id. Null to unassign.",
     )
+    reason: Optional[str] = Field(
+        None,
+        max_length=500,
+        description=(
+            "Required when this submission already has an evaluator. "
+            "Not required for the first assignment."
+        ),
+    )
+
+    @field_validator("evaluator_id", "reason", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
 
 
 class DivideEquallyRequest(BaseModel):
@@ -718,4 +767,5 @@ class CreateSubmissionFromUploadRequest(BaseModel):
         return strip_optional(value)
 
 
+SubmissionResponse.model_rebuild()
 PaginatedSubmissionsResponse.model_rebuild()

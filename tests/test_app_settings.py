@@ -62,7 +62,7 @@ def test_verify_and_change_profile_password():
     assert service.verify_profile_password("new-secret-99") is True
 
 
-def test_reset_database_wipes_collections_and_keeps_admins(monkeypatch):
+def test_reset_database_wipes_collections_and_keeps_only_super_admin(monkeypatch):
     firebase = MagicMock()
     storage_client = MagicMock()
     service = AppSettingsService(firebase=firebase, storage_client=storage_client)
@@ -77,6 +77,7 @@ def test_reset_database_wipes_collections_and_keeps_admins(monkeypatch):
     def get_collection(name: str):
         if name == "users":
             return [
+                {"id": "super-1", "role": "super_admin"},
                 {"id": "admin-1", "role": "admin"},
                 {"id": "student-1", "role": "student"},
                 {"id": "eval-1", "role": "evaluator"},
@@ -89,6 +90,7 @@ def test_reset_database_wipes_collections_and_keeps_admins(monkeypatch):
     firebase.delete_documents.side_effect = lambda coll, ids: len(ids)
     # Auth has Firestore users PLUS an orphan from a previous incomplete wipe.
     firebase.list_auth_users.return_value = [
+        {"uid": "super-1", "email": "superadmin@challazo.com"},
         {"uid": "admin-1", "email": "admin@nxtwave.co.in"},
         {"uid": "student-1", "email": "student@example.com"},
         {"uid": "eval-1", "email": "eval@example.com"},
@@ -105,7 +107,7 @@ def test_reset_database_wipes_collections_and_keeps_admins(monkeypatch):
     ) as wipe_gcs:
         result = service.reset_database(
             DEFAULT_PROFILE_PASSWORD,
-            preserve_user_id="admin-1",
+            preserve_user_id="super-1",
             confirm_phrase="RESET",
         )
     wipe_gcs.assert_called_once_with(
@@ -118,23 +120,25 @@ def test_reset_database_wipes_collections_and_keeps_admins(monkeypatch):
     assert result["deleted_counts"]["verification_sessions"] == 2
     assert result["deleted_counts"]["otp_rate_limits"] == 2
     assert result["deleted_counts"]["mail"] == 2
-    assert result["deleted_counts"]["users_non_admin"] == 2
-    # ensure delete_documents was called for users with only non-admins
+    assert result["deleted_counts"]["users_non_admin"] == 3
+    assert "application_logs" in result["deleted_counts"]
+    assert "roles" in result["deleted_counts"]
+    assert "github_analysis_jobs" in result["deleted_counts"]
     user_delete_calls = [
         c
         for c in firebase.delete_documents.call_args_list
         if c.args[0] == "users"
     ]
     assert user_delete_calls
-    assert set(user_delete_calls[0].args[1]) == {"student-1", "eval-1"}
-    # All non-admin Auth accounts removed, including Auth-only orphans.
-    assert result["deleted_counts"]["firebase_auth_non_admin"] == 3
+    assert set(user_delete_calls[0].args[1]) == {"admin-1", "student-1", "eval-1"}
+    assert result["deleted_counts"]["firebase_auth_non_admin"] == 4
     assert {c.args[0] for c in firebase.delete_user.call_args_list} == {
+        "admin-1",
         "student-1",
         "eval-1",
         "orphan-auth-1",
     }
-    assert "admin-1" not in {c.args[0] for c in firebase.delete_user.call_args_list}
+    assert "super-1" not in {c.args[0] for c in firebase.delete_user.call_args_list}
 
     prompt_delete_calls = [
         c

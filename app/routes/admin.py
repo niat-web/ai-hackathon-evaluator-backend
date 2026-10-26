@@ -9,14 +9,44 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.exceptions import AppError, http_exception_from_value_error
 from app.dependencies import get_user_service
-from app.middleware.auth_middleware import get_admin_user
-from app.models.user_model import CurrentUser, PaginatedUsersResponse, UserResponse, UserUpdate
+from app.middleware.auth_middleware import get_admin_user, get_super_admin_user
+from app.models.user_model import (
+    AdminOverviewResponse,
+    CurrentUser,
+    PaginatedUsersResponse,
+    UserResponse,
+    UserUpdate,
+)
 from app.services.user_service import UserService
 from app.utils.async_io import run_sync
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/overview", response_model=AdminOverviewResponse, status_code=200)
+async def get_admin_overview(
+    admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
+) -> AdminOverviewResponse:
+    """
+    Overview counts and the newest pending evaluators.
+
+    Replaces loading every user and every evaluator just to paint the dashboard.
+    """
+    _ = admin
+    try:
+        payload = await run_sync(user_service.overview)
+    except AppError:
+        raise
+    except Exception as exc:
+        logger.exception("Error building admin overview")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving overview",
+        ) from exc
+    return AdminOverviewResponse(**payload)
 
 
 @router.get("/users", status_code=200, response_model=PaginatedUsersResponse | list[UserResponse])
@@ -39,7 +69,11 @@ async def get_users(
     q: Optional[str] = Query(
         None,
         max_length=200,
-        description="Case-insensitive match on name, email, niat id, employee id, or user id.",
+        description=(
+            "Case-insensitive match on name, email, niat id, college id, "
+            "employee id, user id, or mobile number. A digit query matches "
+            "inside the stored mobile number."
+        ),
     ),
     admin: CurrentUser = Depends(get_admin_user),
     user_service: UserService = Depends(get_user_service),
@@ -144,6 +178,35 @@ async def get_evaluators(
         ) from e
 
 
+@router.get("/evaluators/{user_id}", response_model=UserResponse, status_code=200)
+async def get_evaluator(
+    user_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
+) -> UserResponse:
+    """Evaluator row opened from View details."""
+    _ = admin
+    evaluator = await run_sync(user_service.get_evaluator_account, user_id)
+    return user_service.to_user_response(user_id, evaluator)
+
+
+@router.delete("/evaluators/{user_id}", status_code=200)
+async def delete_evaluator(
+    user_id: str,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    user_service: UserService = Depends(get_user_service),
+) -> dict:
+    """
+    Super Admin removes an evaluator from Evaluator Management.
+
+    Deletes the Firestore profile and the Firebase Auth login. Assigned
+    submissions are left in place and become unassigned.
+    """
+    _ = super_admin
+    await run_sync(user_service.delete_evaluator_account, user_id)
+    return {"message": "User deleted successfully"}
+
+
 @router.post("/evaluators/{user_id}/approve", response_model=UserResponse, status_code=200)
 async def approve_evaluator(
     user_id: str,
@@ -246,3 +309,20 @@ async def update_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error updating user",
         ) from e
+
+
+@router.delete("/user/{user_id}", status_code=200)
+async def delete_student(
+    user_id: str,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    user_service: UserService = Depends(get_user_service),
+) -> dict:
+    """
+    Super Admin removes a student from Student Management.
+
+    Deletes the Firestore profile and the Firebase Auth login. The student
+    cannot sign in again with that account.
+    """
+    _ = super_admin
+    await run_sync(user_service.delete_student_account, user_id)
+    return {"message": "User deleted successfully"}

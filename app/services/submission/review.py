@@ -277,6 +277,68 @@ class ReviewMixin:
 
         return self.firebase.run_transaction(_txn)
 
+    def evaluation_approval_summary(self, hackathon_id: str) -> dict[str, Any]:
+        """How many of this hackathon's submissions are waiting for Super Admin."""
+        self._require_hackathon(hackathon_id)
+        pending, approved, skipped = self._approval_buckets(hackathon_id)
+        return {
+            "hackathon_id": hackathon_id,
+            "pending_review_count": len(pending),
+            "approved_count": len(approved),
+            "skipped_count": len(skipped),
+        }
+
+    def bulk_approve_evaluations(self, hackathon_id: str, admin_user_id: str) -> dict[str, Any]:
+        """
+        Approve every evaluation an evaluator has already submitted for review.
+
+        Already-approved rows are left as they are. Submissions still with the
+        evaluator, or not yet evaluated, are skipped. One failure does not
+        stop the rest. Approved scores are what the leaderboard ranks.
+        """
+        self._require_hackathon(hackathon_id)
+        pending, approved, skipped = self._approval_buckets(hackathon_id)
+        approved_now = 0
+        failed: list[dict[str, str]] = []
+        for submission in pending:
+            submission_id = str(submission.get("id") or "")
+            if not submission_id:
+                continue
+            try:
+                self.approve_evaluation(submission_id, admin_user_id)
+                approved_now += 1
+            except ValueError as exc:
+                failed.append({"submission_id": submission_id, "reason": str(exc)})
+        return {
+            "hackathon_id": hackathon_id,
+            "approved_now": approved_now,
+            "already_approved": len(approved),
+            "skipped": len(skipped),
+            "failed": failed,
+            "leaderboard_eligible": approved_now + len(approved),
+        }
+
+    def _hackathon_submissions(self, hackathon_id: str) -> list[dict[str, Any]]:
+        return self.firebase.query_collection(
+            self.collection, "hackathon_id", "==", hackathon_id.strip()
+        )
+
+    def _approval_buckets(
+        self, hackathon_id: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        pending: list[dict[str, Any]] = []
+        approved: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for item in self._hackathon_submissions(hackathon_id):
+            review = item.get("review_status") or "none"
+            if review == "approved":
+                approved.append(item)
+            elif item.get("status") == "completed" and review == "pending_review":
+                pending.append(item)
+            else:
+                skipped.append(item)
+        return pending, approved, skipped
+
     def report_publishing_settings(self, hackathon_id: str) -> dict[str, Any]:
         """Approved / published counts for the hackathon Settings toggle."""
         hackathon = self._require_hackathon(hackathon_id)

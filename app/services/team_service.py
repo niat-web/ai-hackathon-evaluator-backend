@@ -1,5 +1,5 @@
 """
-Per-round team enrollment (solo or 2–5 member teams with join codes).
+Per-round team enrollment (single, sized team, or unrestricted).
 
 Collections:
 - ``hackathon_teams`` — team roster for a hackathon round
@@ -10,7 +10,6 @@ Collections:
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -33,21 +32,21 @@ from app.services.submission.uniqueness import (
     list_round_submissions,
 )
 from app.services.user_service import UserService
+from app.utils.hackathon_schedule import closed_on_message, opens_on_message, window_status
+from app.utils.hackathon_visibility import student_can_see
+from app.utils.ids import new_uuid
 from app.utils.hackathon_round import (
-    MAX_ROUND_TEAM_SIZE,
-    MIN_FLEX_TEAM_SIZE,
-    TEAM_INCOMPLETE_MESSAGE,
-    TEAM_MODE_LABELS,
-    min_team_size_for,
+    TeamBounds,
     get_timeline_round,
     hackathon_max_submissions,
-    normalize_max_team_size,
-    parse_iso_date,
+    resolve_team_bounds,
     round_auto_ai_evaluation,
     round_github_ai_evaluation,
     round_is_published,
     round_open_for_submission,
     round_student_status,
+    team_incomplete_message,
+    team_too_large_message,
     round_working_demo_video_required,
 )
 from app.utils.team_code import (
@@ -83,7 +82,8 @@ class TeamService:
         self, hackathon_id: str, round_index: int, user: CurrentUser
     ) -> HackathonParticipationResponse:
         hackathon = self._require_hackathon(hackathon_id)
-        round_, round_title, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_visible_to_student(hackathon, user)
+        round_, round_title, bounds = self._resolve_round(hackathon, round_index)
         self._assert_round_visible_to_student(hackathon, round_index, round_)
 
         enrollment = self._get_enrollment_doc(hackathon_id, round_index, user.user_id)
@@ -112,19 +112,32 @@ class TeamService:
                 pending = None
             elif (
                 role == "leader"
-                and max_size > 1
+                and bounds.mode == "multi"
                 and team
-                and team.member_count < MIN_FLEX_TEAM_SIZE
+                and (
+                    team.member_count < bounds.min_size
+                    or (bounds.max_size is not None and team.member_count > bounds.max_size)
+                )
             ):
                 pending = "complete_team"
-                block_reason = TEAM_INCOMPLETE_MESSAGE
+                if bounds.max_size is not None and team.member_count > bounds.max_size:
+                    block_reason = team_too_large_message(bounds.max_size)
+                else:
+                    block_reason = team_incomplete_message(bounds.min_size, bounds.max_size)
             elif not round_open:
                 pending = "round_not_open"
-                start = parse_iso_date(round_.get("start_date"))
-                if round_status == "scheduled" and start:
-                    block_reason = f"This round opens on {start.isoformat()} (IST)."
+                if round_status == "scheduled":
+                    block_reason = opens_on_message(
+                        round_.get("start_date"),
+                        round_.get("start_time"),
+                        what="This round",
+                    )
                 elif round_status == "closed":
-                    block_reason = "This round has closed."
+                    block_reason = closed_on_message(
+                        round_.get("end_date"),
+                        round_.get("end_time"),
+                        what="This round",
+                    )
             elif role == "solo":
                 can_submit = True
                 can_continue_to_demo = True
@@ -133,7 +146,7 @@ class TeamService:
                 can_submit = True
                 can_continue_to_demo = True
                 pending = "ready"
-        elif max_size == 1:
+        elif bounds.mode == "single":
             pending = "solo_enroll"
         else:
             pending = "choose_role"
@@ -150,6 +163,31 @@ class TeamService:
         submissions_remaining = max(0, submission_limit - submission_count)
         already_submitted = submission_count > 0
         existing_submission_id = submissions[-1]["id"] if submissions else None
+        hackathon_status = window_status(
+            hackathon.get("start_date"),
+            hackathon.get("end_date"),
+            hackathon.get("start_time"),
+            hackathon.get("end_time"),
+            now=self._now(),
+        )
+        if hackathon_status != "open" and pending != "already_submitted":
+            can_submit = False
+            can_continue_to_demo = False
+            if hackathon_status == "scheduled" and pending == "ready":
+                pending = "hackathon_not_open"
+                block_reason = opens_on_message(
+                    hackathon.get("start_date"),
+                    hackathon.get("start_time"),
+                    what="Submissions",
+                )
+            elif hackathon_status == "closed" and pending in ("ready", "round_not_open"):
+                pending = "hackathon_closed"
+                block_reason = closed_on_message(
+                    hackathon.get("end_date"),
+                    hackathon.get("end_time"),
+                    what="Submissions",
+                )
+
         if submission_count >= submission_limit:
             can_submit = False
             can_continue_to_demo = False
@@ -164,9 +202,10 @@ class TeamService:
             hackathon_id=hackathon_id,
             round_index=round_index,
             round_title=round_title,
-            max_team_size=max_size,
-            min_team_size=min_team_size_for(max_size),
-            team_mode_label=TEAM_MODE_LABELS.get(max_size, "2-5 Members"),
+            team_size_mode=bounds.mode,
+            max_team_size=bounds.max_size,
+            min_team_size=bounds.min_size,
+            team_mode_label=bounds.label,
             working_demo_video_required=round_working_demo_video_required(hackathon, round_index),
             auto_ai_evaluation=round_auto_ai_evaluation(hackathon, round_index),
             github_ai_evaluation=round_github_ai_evaluation(hackathon, round_index),
@@ -204,8 +243,33 @@ class TeamService:
         if not round_:
             raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
         self._assert_round_visible_to_student(hackathon, round_index, round_)
+        if (
+            window_status(
+                hackathon.get("start_date"),
+                hackathon.get("end_date"),
+                hackathon.get("start_time"),
+                hackathon.get("end_time"),
+                now=self._now(),
+            )
+            == "closed"
+        ):
+            raise ForbiddenError(
+                closed_on_message(
+                    hackathon.get("end_date"),
+                    hackathon.get("end_time"),
+                    what="Submissions",
+                ),
+                code="HACKATHON_CLOSED",
+            )
         if round_student_status(round_, now=self._now()) == "closed":
-            raise ForbiddenError("This round has closed", code="ROUND_CLOSED")
+            raise ForbiddenError(
+                closed_on_message(
+                    round_.get("end_date"),
+                    round_.get("end_time"),
+                    what="This round",
+                ),
+                code="ROUND_CLOSED",
+            )
 
     def _assert_round_open_for_submission(
         self, hackathon: dict[str, Any], round_index: int
@@ -214,25 +278,59 @@ class TeamService:
         if not round_:
             raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
         self._assert_round_visible_to_student(hackathon, round_index, round_)
+        hackathon_status = window_status(
+            hackathon.get("start_date"),
+            hackathon.get("end_date"),
+            hackathon.get("start_time"),
+            hackathon.get("end_time"),
+            now=self._now(),
+        )
+        if hackathon_status == "closed":
+            raise ForbiddenError(
+                closed_on_message(
+                    hackathon.get("end_date"),
+                    hackathon.get("end_time"),
+                    what="Submissions",
+                ),
+                code="HACKATHON_CLOSED",
+            )
         if not round_open_for_submission(hackathon, round_index, now=self._now()):
             status = round_student_status(round_, now=self._now())
             if status == "scheduled":
-                start = parse_iso_date(round_.get("start_date"))
-                detail = (
-                    f"This round opens on {start.isoformat()} (IST)."
-                    if start
-                    else "This round is not open yet."
+                raise ForbiddenError(
+                    opens_on_message(
+                        round_.get("start_date"),
+                        round_.get("start_time"),
+                        what="This round",
+                    ),
+                    code="ROUND_NOT_OPEN",
                 )
-                raise ForbiddenError(detail, code="ROUND_NOT_OPEN")
-            raise ForbiddenError("This round has closed", code="ROUND_CLOSED")
+            raise ForbiddenError(
+                closed_on_message(
+                    round_.get("end_date"),
+                    round_.get("end_time"),
+                    what="This round",
+                ),
+                code="ROUND_CLOSED",
+            )
+        if hackathon_status == "scheduled":
+            raise ForbiddenError(
+                opens_on_message(
+                    hackathon.get("start_date"),
+                    hackathon.get("start_time"),
+                    what="Submissions",
+                ),
+                code="HACKATHON_NOT_OPEN",
+            )
 
     def enroll_solo(
         self, hackathon_id: str, round_index: int, user: CurrentUser
     ) -> HackathonParticipationResponse:
         hackathon = self._require_hackathon(hackathon_id)
-        _, _, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_visible_to_student(hackathon, user)
+        _, _, bounds = self._resolve_round(hackathon, round_index)
         self._assert_round_accepts_enrollment(hackathon, round_index)
-        if max_size != 1:
+        if bounds.mode == "multi":
             raise BadRequestError(
                 "This round requires a team. Choose team leader or team member.",
                 code="TEAM_REQUIRED",
@@ -266,9 +364,10 @@ class TeamService:
         team_name: str,
     ) -> CreateTeamResponse:
         hackathon = self._require_hackathon(hackathon_id)
-        _, round_title, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_visible_to_student(hackathon, user)
+        _, round_title, bounds = self._resolve_round(hackathon, round_index)
         self._assert_round_accepts_enrollment(hackathon, round_index)
-        if max_size < 2:
+        if bounds.mode == "single":
             raise BadRequestError(
                 "This round is solo-only. Enroll directly to submit.",
                 code="SOLO_HACKATHON",
@@ -303,7 +402,7 @@ class TeamService:
             )
 
         profile = self._student_profile(user.user_id)
-        team_id = str(uuid.uuid4())
+        team_id = new_uuid()
         now = now_ist_iso()
         leader_member = self._member_record(user, profile, role="leader", joined_at=now)
         normalized_name = team_name.strip()
@@ -318,7 +417,7 @@ class TeamService:
             "round_title": round_title,
             "leader_id": user.user_id,
             "team_name": normalized_name,
-            "max_members": max_size,
+            "max_members": bounds.max_size,
             "members": [leader_member],
             "created_at": now,
             "updated_at": now,
@@ -355,9 +454,10 @@ class TeamService:
         self, hackathon_id: str, round_index: int, user: CurrentUser, code: str
     ) -> JoinTeamResponse:
         hackathon = self._require_hackathon(hackathon_id)
-        _, round_title, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_visible_to_student(hackathon, user)
+        _, round_title, bounds = self._resolve_round(hackathon, round_index)
         self._assert_round_accepts_enrollment(hackathon, round_index)
-        if max_size < 2:
+        if bounds.mode == "single":
             raise BadRequestError(
                 "This round is solo-only.",
                 code="SOLO_HACKATHON",
@@ -395,7 +495,8 @@ class TeamService:
             raise BadRequestError("Invalid join code", code="INVALID_CODE")
 
         members = list(team_doc.get("members") or [])
-        if len(members) >= int(team_doc.get("max_members") or max_size):
+        cap = bounds.max_size
+        if cap is not None and len(members) >= cap:
             raise ConflictError("This team is already full", code="TEAM_FULL")
 
         if any(m.get("user_id") == user.user_id for m in members):
@@ -435,7 +536,9 @@ class TeamService:
         self, hackathon_id: str, round_index: int, user: CurrentUser
     ) -> TeamJoinCodeResponse:
         """Issue a new join code for an existing team leader."""
-        self._resolve_round(self._require_hackathon(hackathon_id), round_index)
+        hackathon = self._require_hackathon(hackathon_id)
+        self._assert_visible_to_student(hackathon, user)
+        self._resolve_round(hackathon, round_index)
         self._assert_student(user)
         enrollment = self._get_enrollment_doc(hackathon_id, round_index, user.user_id)
         if not enrollment or enrollment.get("role") != "leader":
@@ -462,7 +565,8 @@ class TeamService:
         Raises if not enrolled or not the team leader (team rounds).
         """
         hackathon = self._require_hackathon(hackathon_id)
-        _, _, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_visible_to_student_id(hackathon, student_id)
+        _, _, bounds = self._resolve_round(hackathon, round_index)
         self._assert_round_open_for_submission(hackathon, round_index)
         enrollment = self._get_enrollment_doc(hackathon_id, round_index, student_id)
         if not enrollment:
@@ -472,8 +576,8 @@ class TeamService:
             )
 
         role = enrollment.get("role")
-        if max_size == 1:
-            if role != "solo":
+        if bounds.mode == "single" or role == "solo":
+            if role != "solo" or bounds.mode == "multi":
                 raise ForbiddenError(
                     "Invalid enrollment for this solo round",
                     code="NOT_ENROLLED",
@@ -504,11 +608,14 @@ class TeamService:
         if not team_doc:
             raise NotFoundError("Team not found", code="TEAM_NOT_FOUND")
         members = list(team_doc.get("members") or [])
-        if len(members) < MIN_FLEX_TEAM_SIZE:
-            raise ForbiddenError(TEAM_INCOMPLETE_MESSAGE, code="TEAM_INCOMPLETE")
-        if len(members) > MAX_ROUND_TEAM_SIZE:
+        if bounds.mode == "multi" and len(members) < bounds.min_size:
             raise ForbiddenError(
-                "A team cannot have more than 5 members.",
+                team_incomplete_message(bounds.min_size, bounds.max_size),
+                code="TEAM_INCOMPLETE",
+            )
+        if bounds.max_size is not None and len(members) > bounds.max_size:
+            raise ForbiddenError(
+                team_too_large_message(bounds.max_size),
                 code="TEAM_TOO_LARGE",
             )
         assert_within_submission_limit(
@@ -581,7 +688,8 @@ class TeamService:
             )
             for m in members_raw
         ]
-        max_members = int(team_doc.get("max_members") or 1)
+        raw_max = team_doc.get("max_members")
+        max_members = int(raw_max) if raw_max is not None else None
         count = len(members)
         return HackathonTeamResponse(
             id=team_id,
@@ -593,7 +701,7 @@ class TeamService:
             max_members=max_members,
             member_count=count,
             members=members,
-            is_full=count >= max_members,
+            is_full=max_members is not None and count >= max_members,
         )
 
     def _require_hackathon(self, hackathon_id: str) -> dict[str, Any]:
@@ -604,7 +712,7 @@ class TeamService:
 
     def _resolve_round(
         self, hackathon: dict[str, Any], round_index: int
-    ) -> tuple[dict[str, Any], str, int]:
+    ) -> tuple[dict[str, Any], str, TeamBounds]:
         timeline = hackathon.get("timeline") or []
         if round_index < 0 or round_index >= len(timeline):
             raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
@@ -612,8 +720,7 @@ class TeamService:
         if not isinstance(round_, dict):
             round_ = dict(round_)
         title = str(round_.get("title") or f"Round {round_index + 1}")
-        max_size = normalize_max_team_size(round_.get("max_team_size", 1))
-        return round_, title, max_size
+        return round_, title, resolve_team_bounds(round_)
 
     @staticmethod
     def _enrollment_id(hackathon_id: str, round_index: int, user_id: str) -> str:
@@ -624,6 +731,25 @@ class TeamService:
     ) -> dict[str, Any] | None:
         return self.firebase.get_document(
             ENROLLMENTS, self._enrollment_id(hackathon_id, round_index, user_id)
+        )
+
+    def _assert_visible_to_student(self, hackathon: dict[str, Any], user: CurrentUser) -> None:
+        if user.role != "student":
+            return
+        if student_can_see(hackathon, user.university_id, user.batch_id):
+            return
+        raise ForbiddenError(
+            "This hackathon is not open to your university and batch.",
+            code="NOT_VISIBLE",
+        )
+
+    def _assert_visible_to_student_id(self, hackathon: dict[str, Any], student_id: str) -> None:
+        profile = self.user_service.get_user(student_id) or {}
+        if student_can_see(hackathon, profile.get("university_id"), profile.get("batch_id")):
+            return
+        raise ForbiddenError(
+            "This hackathon is not open to your university and batch.",
+            code="NOT_VISIBLE",
         )
 
     def _assert_student(self, user: CurrentUser) -> None:

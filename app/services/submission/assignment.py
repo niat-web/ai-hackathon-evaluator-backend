@@ -1,9 +1,32 @@
 """Evaluator assignment and divide-equally helpers."""
 
 from __future__ import annotations
-from app.utils.time import now_ist_iso
 
 from typing import Any
+
+from app.exceptions import BadRequestError
+from app.utils.time import now_ist_iso
+
+_SUBMITTED_REVIEW_STATUSES = frozenset({"pending_review", "changes_requested", "approved"})
+_REASON_REQUIRED = "Give a reason for changing the evaluator."
+
+
+def _assigned_id(submission: dict[str, Any]) -> str | None:
+    raw = submission.get("assigned_evaluator_id")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _evaluation_was_submitted(submission: dict[str, Any]) -> bool:
+    """True when the current evaluator has a score or the review has left 'none'."""
+    if submission.get("final_score") is not None:
+        return True
+    if submission.get("evaluator_score") is not None:
+        return True
+    review = str(submission.get("review_status") or "none").strip()
+    return review in _SUBMITTED_REVIEW_STATUSES
 
 
 class AssignmentMixin:
@@ -12,22 +35,64 @@ class AssignmentMixin:
         submission_id: str,
         evaluator_id: str | None,
         assigned_by: str,
+        *,
+        assigned_by_name: str | None = None,
+        reason: str | None = None,
     ) -> dict[str, Any]:
-        """Assign one approved evaluator to a submission, or clear the assignment."""
+        """Assign one approved evaluator to a submission, or clear the assignment.
+
+        A first assignment needs no reason. Changing or removing an evaluator
+        does. The previous score stays on the submission; only the review
+        workflow resets so the new evaluator can submit.
+        """
+        target_id = (evaluator_id or "").strip() or None
+        cleaned_reason = (reason or "").strip() or None
+        if cleaned_reason is not None and len(cleaned_reason) > 500:
+            raise BadRequestError("Reason must be 500 characters or fewer.")
+
         # User lookup stays outside the transaction (different collection / service).
         evaluator: dict[str, Any] | None = None
-        if evaluator_id is not None and str(evaluator_id).strip():
-            evaluator = self._require_active_evaluator(evaluator_id.strip())
+        if target_id is not None:
+            evaluator = self._require_active_evaluator(target_id)
             existing = self.firebase.get_document(self.collection, submission_id)
             hackathon_id = existing.get("hackathon_id") if isinstance(existing, dict) else None
             self._assert_evaluator_on_hackathon(hackathon_id, evaluator["id"] if evaluator else "")
 
         now = now_ist_iso()
+        actor_name = (assigned_by_name or "").strip() or assigned_by
 
         def _txn(transaction):
             submission = self.firebase.txn_get(transaction, self.collection, submission_id)
             if not submission:
                 raise ValueError("Submission not found")
+
+            previous_id = _assigned_id(submission)
+            next_id = evaluator["id"] if evaluator else None
+            if previous_id == next_id:
+                return {"id": submission_id, **submission}
+
+            if previous_id and not cleaned_reason:
+                raise BadRequestError(_REASON_REQUIRED, code="REASON_REQUIRED")
+
+            history = list(submission.get("assignment_history") or [])
+            history.append(
+                {
+                    "changed_at": now,
+                    "changed_by_id": assigned_by,
+                    "changed_by_name": actor_name,
+                    "from_evaluator_id": previous_id,
+                    "from_evaluator_name": (
+                        (submission.get("assigned_evaluator_name") or "").strip() or None
+                        if previous_id
+                        else None
+                    ),
+                    "to_evaluator_id": next_id,
+                    "to_evaluator_name": evaluator["name"] if evaluator else None,
+                    "reason": cleaned_reason if previous_id else None,
+                    "evaluation_submitted": bool(previous_id)
+                    and _evaluation_was_submitted(submission),
+                }
+            )
 
             if evaluator is None:
                 update = {
@@ -38,6 +103,7 @@ class AssignmentMixin:
                     "review_status": "none",
                     "submitted_for_review_at": None,
                     "submitted_for_review_by": None,
+                    "assignment_history": history,
                     "updated_at": now,
                 }
             else:
@@ -46,10 +112,12 @@ class AssignmentMixin:
                     "assigned_evaluator_name": evaluator["name"],
                     "assigned_at": now,
                     "assigned_by": assigned_by,
-                    # Reassignment clears in-flight review submission.
+                    # The previous scorecard and final_score stay. Review resets
+                    # so the new evaluator can submit their own evaluation.
                     "review_status": "none",
                     "submitted_for_review_at": None,
                     "submitted_for_review_by": None,
+                    "assignment_history": history,
                     "updated_at": now,
                 }
 

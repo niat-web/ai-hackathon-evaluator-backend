@@ -6,7 +6,6 @@ from app.utils.time import now_ist_iso
 import logging
 import math
 import os
-import uuid
 from typing import Any, BinaryIO
 
 
@@ -15,6 +14,7 @@ logger = logging.getLogger(__name__)
 # GCS object compose accepts at most 32 source objects per call.
 _MAX_COMPOSE_PARTS = 32
 
+from app.utils.ids import new_id
 from app.utils.gcs_video import (
     compose_object_from_parts,
     create_resumable_upload_url,
@@ -132,7 +132,7 @@ class CreateMixin:
                 )
                 upload_target = fileobj
 
-            submission_id = uuid.uuid4().hex
+            submission_id = new_id()
             object_name = self._video_object_name(student.user_id, submission_id, extension)
             video_path = f"gs://{self.bucket_name}/{object_name}"
 
@@ -141,7 +141,7 @@ class CreateMixin:
             else:
                 self._upload_fileobj(object_name, upload_target, resolved_type)
         else:
-            submission_id = uuid.uuid4().hex
+            submission_id = new_id()
 
         submission = self._build_new_submission_document(
             student_id=student.user_id,
@@ -193,7 +193,7 @@ class CreateMixin:
         if content_length is not None:
             assert_video_size(content_length, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed")
 
-        submission_id = uuid.uuid4().hex
+        submission_id = new_id()
         object_name = self._video_object_name(student.user_id, submission_id, extension)
         video_path = f"gs://{self.bucket_name}/{object_name}"
         expires_in = int(os.getenv("VIDEO_UPLOAD_URL_EXPIRY_SECONDS", "3600"))
@@ -379,7 +379,7 @@ class CreateMixin:
         )
 
         resolved_type: str | None = None
-        submission_id = uuid.uuid4().hex
+        submission_id = new_id()
 
         if has_video:
             assert video_path is not None
@@ -426,7 +426,7 @@ class CreateMixin:
             # Prefer the path segment as the stable submission id.
             parts = object_name.split("/")
             # submissions/{student_id}/{submission_id}/video.ext
-            submission_id = parts[2] if len(parts) >= 4 else uuid.uuid4().hex
+            submission_id = parts[2] if len(parts) >= 4 else new_id()
 
             existing = self.firebase.get_document(self.collection, submission_id)
             if existing:

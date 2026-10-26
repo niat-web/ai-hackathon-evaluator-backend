@@ -15,6 +15,18 @@ from app.services.user_service import UserService
 logger = logging.getLogger(__name__)
 
 
+def _auth_uid(user: Any) -> str | None:
+    if user is None:
+        return None
+    uid = getattr(user, "uid", None)
+    if uid:
+        return str(uid)
+    if isinstance(user, dict):
+        found = user.get("uid") or user.get("user_id")
+        return str(found) if found else None
+    return None
+
+
 def seed_on_startup_enabled() -> bool:
     """
     Whether lifespan should run ``DatabaseSeeder.seed_all``.
@@ -47,18 +59,24 @@ class SeedUser(TypedDict):
     team_members: NotRequired[list[TeamMemberSeed]]
 
 
-# Startup seed creates only the bootstrap admin (no sample evaluators/students,
-# and no AI evaluation prompts — those are managed in the admin UI).
+# Startup seed creates only the Super Admin (no sample evaluators/students,
+# and no AI evaluation prompts). The Admin role stays assignable; Super Admin
+# creates admin accounts from Application Access.
+# Bump when the seeded Super Admin password changes so an existing Auth user
+# is updated once, then left alone on later startups.
+SUPER_ADMIN_PASSWORD_REVISION = "2"
+# Removed from the seed. Startup deletes this account if a previous seed left it.
+RETIRED_BOOTSTRAP_EMAILS = ("admin@nxtwave.co.in",)
 DEFAULT_SEED_USERS: list[SeedUser] = [
     {
-        "email": "admin@nxtwave.co.in",
-        "password": "12345678",
-        "first_name": "Debasis",
-        "last_name": "Mohanty",
-        "role": "admin",
+        "email": "superadmin@challazo.com",
+        "password": "cdNAYAK2000@",
+        "first_name": "Super",
+        "last_name": "Admin",
+        "role": "super_admin",
         "niat_id": None,
-        "employee_id": "NW-ADM-001",
-        "mobile_no": "9000000001",
+        "employee_id": "CHZ-SUPER-001",
+        "mobile_no": "9000000000",
     },
 ]
 
@@ -67,8 +85,9 @@ class DatabaseSeeder:
     """
     Seeder for initializing database with bootstrap data.
 
-    On startup this ensures only the admin account (and Profile Password) exist.
-    It does **not** seed AI prompts or sample student/evaluator users.
+    On startup this ensures the Super Admin, the built-in Admin role, and the
+    Profile Password exist. It removes the retired bootstrap admin login and
+    does not seed AI prompts or sample student/evaluator users.
     """
 
     def __init__(
@@ -96,6 +115,8 @@ class DatabaseSeeder:
             if existing_user:
                 user_id = existing_user.uid
                 logger.info("Found existing user in Firebase Auth: %s", email)
+                if role == "super_admin":
+                    self._apply_super_admin_password(user_id, seed)
 
                 firestore_user = self.user_service.get_user(user_id)
                 if firestore_user:
@@ -184,13 +205,25 @@ class DatabaseSeeder:
                 ]
         elif seed["role"] == "evaluator":
             profile["employee_id"] = seed["employee_id"]
-        elif seed["role"] == "admin" and seed["employee_id"]:
+        elif seed["role"] in ("admin", "super_admin") and seed["employee_id"]:
             profile["employee_id"] = seed["employee_id"]
+            profile["email_verified"] = True
+            profile["phone_verified"] = True
+            profile["profile_completed"] = True
+            if seed["role"] == "super_admin":
+                profile["seed_password_revision"] = SUPER_ADMIN_PASSWORD_REVISION
 
         if seed["mobile_no"] and seed["role"] != "student":
             profile["mobile_no"] = seed["mobile_no"]
 
         return profile
+
+    def _apply_super_admin_password(self, user_id: str, seed: SeedUser) -> None:
+        """Set the seeded Super Admin password once when the Auth user already exists."""
+        existing = self.user_service.get_user(user_id) or {}
+        if existing.get("seed_password_revision") == SUPER_ADMIN_PASSWORD_REVISION:
+            return
+        self.firebase.update_user_password(user_id, seed["password"])
 
     def _create_firestore_record(self, user_id: str, seed: SeedUser) -> None:
         """Create a user record in Firestore."""
@@ -202,9 +235,53 @@ class DatabaseSeeder:
         seed: SeedUser,
         existing: dict[str, Any],
     ) -> None:
-        """Update an existing Firestore profile to match seed registration fields."""
+        """Keep a seeded Super Admin's edited name. Fill only fields still empty."""
+        if seed["role"] == "super_admin":
+            patch: dict[str, Any] = {
+                "role": "super_admin",
+                "email": seed["email"].lower(),
+                "email_verified": True,
+                "phone_verified": True,
+                "profile_completed": True,
+                "seed_password_revision": SUPER_ADMIN_PASSWORD_REVISION,
+                "updated_at": now_ist_iso(),
+            }
+            if not str(existing.get("first_name") or "").strip():
+                patch["first_name"] = seed["first_name"].strip()
+            if not str(existing.get("last_name") or "").strip():
+                patch["last_name"] = seed["last_name"].strip()
+            if not str(existing.get("name") or "").strip():
+                patch["name"] = self._display_name(seed)
+            if not str(existing.get("employee_id") or "").strip() and seed.get("employee_id"):
+                patch["employee_id"] = seed["employee_id"]
+            if not str(existing.get("mobile_no") or "").strip() and seed.get("mobile_no"):
+                patch["mobile_no"] = seed["mobile_no"]
+            self.firebase.update_document("users", user_id, patch)
+            return
         profile = self._build_profile(seed, created_at=existing.get("created_at"))
         self.firebase.set_document("users", user_id, profile)
+
+    def _remove_retired_bootstrap_users(self) -> None:
+        """Drop logins that used to be seeded and should not remain in the database."""
+        for email in RETIRED_BOOTSTRAP_EMAILS:
+            try:
+                self._remove_retired_bootstrap_user(email)
+            except Exception as exc:
+                logger.warning("Could not remove retired bootstrap user %s: %s", email, exc)
+
+    def _remove_retired_bootstrap_user(self, email: str) -> None:
+        auth_user = self.firebase.get_user_by_email(email)
+        user_id = _auth_uid(auth_user)
+        if user_id:
+            self.firebase.delete_document("users", user_id)
+            self.firebase.delete_user(user_id)
+            logger.info("Removed retired bootstrap account %s", email)
+            return
+        for row in self.firebase.query_collection("users", "email", "==", email):
+            row_id = row.get("id")
+            if row_id:
+                self.firebase.delete_document("users", row_id)
+                logger.info("Removed retired bootstrap profile %s", email)
 
     def seed_all(self) -> bool:
         """
@@ -215,6 +292,7 @@ class DatabaseSeeder:
         """
         try:
             logger.info("Starting database seeding...")
+            self._remove_retired_bootstrap_users()
 
             for seed_user in DEFAULT_SEED_USERS:
                 logger.info("\n%s", "=" * 60)
@@ -226,6 +304,7 @@ class DatabaseSeeder:
                 logger.info("%s", "=" * 60)
                 self.seed_user(seed_user)
 
+            self._seed_builtin_admin_role()
             self._seed_profile_password()
             self._backfill_legacy_users()
 
@@ -234,6 +313,15 @@ class DatabaseSeeder:
         except Exception as e:
             logger.error("Error during seeding: %s", str(e))
             raise
+
+    def _seed_builtin_admin_role(self) -> None:
+        """Admin stays assignable, and the built-in Student role stays listed."""
+        try:
+            from app.services.access_service import AccessService
+
+            AccessService(firebase=self.firebase).seed_builtin_admin_role()
+        except Exception as e:
+            logger.warning("Could not seed the Admin role: %s", str(e))
 
     def _seed_profile_password(self) -> None:
         """Idempotently seed admin Profile Password (default ``12345678``)."""

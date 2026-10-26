@@ -21,6 +21,7 @@ from app.utils.hackathon_round import (
 
 
 ADMIN_SUBMISSION_STATUSES = frozenset({"uploaded", "processing", "completed", "failed"})
+ADMIN_REVIEW_STATUSES = frozenset({"none", "pending_review", "changes_requested", "approved"})
 DEFAULT_SUBMISSION_PAGE_SIZE = 10
 MAX_SUBMISSION_PAGE_SIZE = 100
 
@@ -64,7 +65,9 @@ class QueryMixin:
         if not submission:
             return None
 
-        if current_user.role == "admin":
+        if current_user.role in ("admin", "super_admin") or (
+            "submissions" in (current_user.permissions or [])
+        ):
             return {"id": submission_id, **submission}
 
         if submission.get("student_id") == current_user.user_id:
@@ -166,7 +169,9 @@ class QueryMixin:
         current_user: CurrentUser,
     ) -> None:
         """Admin, or the assigned evaluator, may start AI analysis."""
-        if current_user.role == "admin":
+        if current_user.role in ("admin", "super_admin") or (
+            "submissions" in (current_user.permissions or [])
+        ):
             return
         if (
             current_user.role == "evaluator"
@@ -202,16 +207,22 @@ class QueryMixin:
         page_size: int,
         round_index: int | None = None,
         status: str | None = None,
+        review_status: str | None = None,
         q: str | None = None,
     ) -> dict[str, Any]:
         """
         One page of a hackathon's submissions for the admin queue.
 
         ``round_summary`` counts every submission in the hackathon. ``total``
-        and ``items`` honor round, status, and search. Newest ``created_at`` first.
+        and ``items`` honor round, AI status, review status, and search.
+        Newest ``created_at`` first. A missing ``review_status`` matches ``none``.
         """
         if status is not None and status not in ADMIN_SUBMISSION_STATUSES:
             raise ValueError("status must be uploaded, processing, completed, or failed")
+        if review_status is not None and review_status not in ADMIN_REVIEW_STATUSES:
+            raise ValueError(
+                "review_status must be none, pending_review, changes_requested, or approved"
+            )
 
         page = max(int(page), 1)
         page_size = min(max(int(page_size), 1), MAX_SUBMISSION_PAGE_SIZE)
@@ -233,6 +244,7 @@ class QueryMixin:
                 submission,
                 round_index=round_index,
                 status=status,
+                review_status=review_status,
                 needle=needle,
             )
         ]
@@ -254,11 +266,17 @@ class QueryMixin:
         *,
         round_index: int | None,
         status: str | None,
+        review_status: str | None,
         needle: str,
     ) -> bool:
         if round_index is not None and admin_queue_round_index(submission) != round_index:
             return False
         if status is not None and submission.get("status") != status:
+            return False
+        if (
+            review_status is not None
+            and (submission.get("review_status") or "none") != review_status
+        ):
             return False
         if not needle:
             return True
@@ -311,6 +329,8 @@ class QueryMixin:
                     "name": enriched["name"],
                     "start_date": enriched["start_date"],
                     "end_date": enriched["end_date"],
+                    "start_time": enriched.get("start_time") or "00:00",
+                    "end_time": enriched.get("end_time") or "23:59",
                     "submission_count": count,
                     "banner_url": enriched.get("banner_url"),
                     "auto_ai_evaluation": bool(enriched.get("auto_ai_evaluation", False)),
@@ -413,6 +433,7 @@ class QueryMixin:
         enriched.setdefault("assigned_evaluator_name", None)
         enriched.setdefault("assigned_at", None)
         enriched.setdefault("assigned_by", None)
+        enriched.setdefault("assignment_history", [])
         enriched.setdefault("analyzed_by", None)
         enriched.setdefault("review_status", "none")
         enriched.setdefault("final_score", None)
@@ -495,7 +516,13 @@ class QueryMixin:
         else:
             enriched["video_url"] = None
 
-        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
+        is_staff = bool(
+            current_user
+            and (
+                current_user.role in ("admin", "super_admin", "evaluator")
+                or "submissions" in (current_user.permissions or [])
+            )
+        )
         can_see_analysis = is_staff or self.student_can_view_report(enriched)
 
         analysis_id = enriched.get("analysis_id")
@@ -532,9 +559,13 @@ class QueryMixin:
             enriched["final_score"] = None
             enriched["evaluator_notes"] = None
             enriched["review_notes"] = None
+            enriched["assignment_history"] = []
 
         can_start = False
-        if current_user and current_user.role in ("admin", "evaluator"):
+        if current_user and (
+            current_user.role in ("admin", "super_admin", "evaluator")
+            or "submissions" in (current_user.permissions or [])
+        ):
             try:
                 self.assert_can_evaluate(enriched, current_user)
                 can_start = True
@@ -570,7 +601,13 @@ class QueryMixin:
         """Attach competition rank for a single submission detail view."""
         from app.services.leaderboard_service import LeaderboardService
 
-        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
+        is_staff = bool(
+            current_user
+            and (
+                current_user.role in ("admin", "super_admin", "evaluator")
+                or "submissions" in (current_user.permissions or [])
+            )
+        )
         rank_info = LeaderboardService(
             firebase=self.firebase,
             hackathon_service=self.hackathon_service,
@@ -594,7 +631,13 @@ class QueryMixin:
         if not submissions:
             return []
 
-        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
+        is_staff = bool(
+            current_user
+            and (
+                current_user.role in ("admin", "super_admin", "evaluator")
+                or "submissions" in (current_user.permissions or [])
+            )
+        )
         analysis_ids: list[str] = []
         for submission in submissions:
             analysis_id = submission.get("analysis_id")

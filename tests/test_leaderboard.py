@@ -175,7 +175,7 @@ def test_admin_preview_includes_ranks_before_publish():
     assert preview["stats"]["approved_count"] == 2
 
 
-def test_publish_notifies_candidates_and_unlocks_students():
+def test_publish_unlocks_students_without_email():
     email = RecordingEmailService()
     firebase = FakeFirebase(
         {
@@ -187,13 +187,10 @@ def test_publish_notifies_candidates_and_unlocks_students():
         }
     )
     service = _service(firebase, email=email)
-    result = service.publish_leaderboard(
-        "hack-1", 0, "admin-1", current_user=_admin()
-    )
+    result = service.publish_leaderboard("hack-1", 0, "admin-1", current_user=_admin(), notify=True)
     assert result["published"] is True
-    assert result["notified_count"] == 1
-    assert email.notifications[0][0] == "arjun@example.com"
-    assert "ranking is live" in email.notifications[0][1]
+    assert result["notified_count"] == 0
+    assert email.notifications == []
     student_view = service.get_leaderboard("hack-1", 0, _student("stu-1"))
     assert student_view["published"] is True
     assert student_view["entries"][0]["rank_label"] == "1st"
@@ -235,24 +232,61 @@ def test_unpublish_hides_board_from_students():
         service.get_leaderboard("hack-1", 0, _student())
 
 
-def test_republish_does_not_email_unless_requested():
+def test_announce_winners_emails_place_labels_and_includes_a_tie():
     email = RecordingEmailService()
     firebase = FakeFirebase(
         {
-            ("hackathons", "hack-1"): _hackathon_doc(),
+            ("hackathons", "hack-1"): {
+                **_hackathon_doc(),
+                "prizes": {
+                    "winner": "Laptop",
+                    "first_runner_up": "Tablet",
+                    "second_runner_up": "Headphones",
+                },
+            },
             ("submissions", "s1"): _submission(
-                doc_id="s1", student_id="stu-1", score=88, team_name="Alpha"
+                doc_id="s1", student_id="stu-1", score=100, team_name="First"
             ),
-            ("users", "stu-1"): {"name": "Arjun", "email": "arjun@example.com"},
+            ("submissions", "s2"): _submission(
+                doc_id="s2", student_id="stu-2", score=90, team_name="Tied A"
+            ),
+            ("submissions", "s3"): _submission(
+                doc_id="s3", student_id="stu-3", score=90, team_name="Tied B"
+            ),
+            ("submissions", "s4"): _submission(
+                doc_id="s4", student_id="stu-4", score=80, team_name="Fourth"
+            ),
+            ("users", "stu-1"): {"name": "Ada", "email": "ada@example.com"},
+            ("users", "stu-2"): {"name": "Grace", "email": "grace@example.com"},
+            ("users", "stu-3"): {"name": "Lin", "email": "lin@example.com"},
+            ("users", "stu-4"): {"name": "Ken", "email": "ken@example.com"},
         }
     )
     service = _service(firebase, email=email)
+    with pytest.raises(BadRequestError) as blocked:
+        service.announce_winners("hack-1", 0, 3, "super-1")
+    assert blocked.value.code == "LEADERBOARD_NOT_PUBLISHED"
+
     service.publish_leaderboard("hack-1", 0, "admin-1")
-    assert len(email.notifications) == 1
-    service.publish_leaderboard("hack-1", 0, "admin-1")
-    assert len(email.notifications) == 1
-    service.publish_leaderboard("hack-1", 0, "admin-1", notify=True)
-    assert len(email.notifications) == 2
+    assert email.notifications == []
+
+    preview = service.preview_winners("hack-1", 0, 3)
+    assert preview["emails_sent"] == 0
+    assert [row["place_label"] for row in preview["entries"]] == [
+        "Winner (1st prize)",
+        "1st runner-up (2nd prize)",
+        "1st runner-up (2nd prize)",
+    ]
+
+    result = service.announce_winners("hack-1", 0, 3, "super-1")
+    assert result["announced_count"] == 3
+    assert result["emails_sent"] == 3
+    subjects = [item[1] for item in email.notifications]
+    assert any(subject.startswith("Winner (1st prize)") for subject in subjects)
+    assert any("1st runner-up (2nd prize)" in subject for subject in subjects)
+    assert "ken@example.com" not in [item[0] for item in email.notifications]
+    stored = firebase.get_document("hackathons", "hack-1")
+    assert stored["timeline"][0]["winner_announcement"]["top_n"] == 3
 
 
 def test_excludes_non_approved_from_ranking():
@@ -279,9 +313,7 @@ def test_excludes_non_approved_from_ranking():
 
 
 def test_round_leaderboard_published_helper():
-    hackathon = {
-        "timeline": [{"title": "R1"}, {"title": "R2", "leaderboard_published": True}]
-    }
+    hackathon = {"timeline": [{"title": "R1"}, {"title": "R2", "leaderboard_published": True}]}
     assert round_leaderboard_published(hackathon, 0) is False
     assert round_leaderboard_published(hackathon, 1) is True
     assert round_leaderboard_published(hackathon, 9) is False
@@ -304,8 +336,6 @@ def test_rank_for_submission_hidden_from_students_until_publish():
     staff = service.rank_for_submission(submission, is_staff=True)
     assert staff["leaderboard_rank"] == 1
     service.publish_leaderboard("hack-1", 0, "admin-1", notify=False)
-    visible = service.rank_for_submission(
-        {**submission, "id": "s1"}, is_staff=False
-    )
+    visible = service.rank_for_submission({**submission, "id": "s1"}, is_staff=False)
     assert visible["leaderboard_published"] is True
     assert visible["leaderboard_rank_label"] == "1st"

@@ -139,7 +139,9 @@ def _ensure_student_can_view_report(
     current_user: CurrentUser,
 ) -> None:
     """Staff always; students only after publish/approval."""
-    if current_user.role in ("admin", "evaluator"):
+    if current_user.role in ("admin", "super_admin", "evaluator") or (
+        "submissions" in (current_user.permissions or [])
+    ):
         return
     if not service.student_can_view_report(submission):
         raise HTTPException(
@@ -426,6 +428,14 @@ async def list_submissions_for_hackathon_admin(
         alias="status",
         description="uploaded | processing | completed | failed. Omit for every status.",
     ),
+    review_status: str
+    | None = Query(
+        None,
+        description=(
+            "none | pending_review | changes_requested | approved. "
+            "none also matches a submission with no review_status. Omit for every review state."
+        ),
+    ),
     q: str
     | None = Query(
         None,
@@ -440,7 +450,7 @@ async def list_submissions_for_hackathon_admin(
 
     Without ``page``, returns every submission as a JSON array (existing clients).
     With ``page``, returns ``{ items, total, page, page_size, round_summary }``.
-    ``round_summary`` ignores status and search so the round cards stay stable.
+    ``round_summary`` ignores status, review status, and search so the round cards stay stable.
     """
     hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
     if not hackathon:
@@ -461,6 +471,7 @@ async def list_submissions_for_hackathon_admin(
             page_size=page_size,
             round_index=round_index,
             status=submission_status,
+            review_status=review_status,
             q=q,
         )
     except ValueError as e:
@@ -817,7 +828,9 @@ async def evaluate_submission(
     After analysis completes, the evaluator submits for review; admin approval
     publishes the final score to the student.
     """
-    if current_user.role not in ("admin", "evaluator"):
+    if current_user.role not in ("admin", "super_admin", "evaluator") and (
+        "submissions" not in (current_user.permissions or [])
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins or assigned evaluators can start analysis",
@@ -913,7 +926,9 @@ async def evaluate_github_ai(
     solution, then queues ``POST /analyze`` and polls ``GET /analyze/{job_id}``.
     Stores ``result.scoring.total_score`` on the GitHub scorecard metric.
     """
-    if current_user.role not in ("admin", "evaluator"):
+    if current_user.role not in ("admin", "super_admin", "evaluator") and (
+        "submissions" not in (current_user.permissions or [])
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins or assigned evaluators can run GitHub AI evaluation",
@@ -1104,8 +1119,14 @@ async def assign_submission_evaluator(
     Used by the per-row Evaluator dropdown on the admin Submissions table.
     Pass ``evaluator_id: null`` to unassign.
 
-    When the hackathon has ``auto_ai_evaluation=true`` and an evaluator is
-    assigned, AI evaluation is queued automatically.
+    ``reason`` is required when an evaluator is already assigned (reassign or
+    unassign). A missing or blank reason returns 400 ``REASON_REQUIRED``.
+    The first assignment does not need one. Every change is appended to
+    ``assignment_history`` and is not rewritten later.
+
+    When the submission's round has auto AI on, analysis is queued only if it
+    has not already finished or is in progress (``status`` ``completed`` or
+    ``processing`` is left alone).
     """
     try:
         submission = await run_sync(
@@ -1113,6 +1134,8 @@ async def assign_submission_evaluator(
             submission_id=submission_id,
             evaluator_id=request.evaluator_id,
             assigned_by=admin.user_id,
+            assigned_by_name=admin.name,
+            reason=request.reason,
         )
     except ValueError as e:
         detail = str(e)

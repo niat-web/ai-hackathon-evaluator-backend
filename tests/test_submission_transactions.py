@@ -96,13 +96,20 @@ def test_assign_evaluator_clears_pending_review(service: SubmissionService):
         return_value={"id": "evaluator-2", "name": "Eva Two"}
     )
 
-    result = service.assign_evaluator("sub-1", "evaluator-2", assigned_by="admin-1")
+    result = service.assign_evaluator(
+        "sub-1",
+        "evaluator-2",
+        assigned_by="admin-1",
+        reason="Handing this team to Eva",
+    )
 
     payload = service.firebase.txn_update.call_args[0][3]
     assert payload["assigned_evaluator_id"] == "evaluator-2"
     assert payload["review_status"] == "none"
     assert payload["submitted_for_review_at"] is None
+    assert "final_score" not in payload
     assert result["assigned_evaluator_id"] == "evaluator-2"
+    assert payload["assignment_history"][-1]["evaluation_submitted"] is True
 
 
 def test_commit_analysis_and_submission_uses_batch(service: SubmissionService):

@@ -208,3 +208,50 @@ def test_round_accepts_five_member_teams():
     assert coerced.team_mode_label == "2-5 Members"
     with pytest.raises(ValidationError):
         TimelineRound(title="Round 1", max_team_size=6)
+
+
+def test_round_team_size_modes():
+    from app.models.hackathon_model import TimelineRound
+
+    single = TimelineRound(title="Round 1", team_size_mode="single")
+    assert single.team_size_mode == "single"
+    assert single.min_team_size == 1
+    assert single.max_team_size == 1
+
+    exact = TimelineRound(
+        title="Round 1",
+        team_size_mode="multi",
+        min_team_size=3,
+        max_team_size=3,
+    )
+    assert exact.min_team_size == 3
+    assert exact.max_team_size == 3
+    assert exact.team_mode_label == "3 members"
+
+    ranged = TimelineRound(
+        title="Round 1",
+        team_size_mode="multi",
+        min_team_size=2,
+        max_team_size=6,
+    )
+    assert ranged.team_mode_label == "2-6 members"
+
+    open_round = TimelineRound(title="Round 1", team_size_mode="open")
+    assert open_round.min_team_size == 1
+    assert open_round.max_team_size is None
+    assert open_round.team_mode_label == "No fixed team size"
+
+    with pytest.raises(ValidationError):
+        TimelineRound(
+            title="Round 1",
+            team_size_mode="multi",
+            min_team_size=4,
+            max_team_size=3,
+        )
+    with pytest.raises(ValidationError):
+        TimelineRound(
+            title="Round 1",
+            team_size_mode="multi",
+            min_team_size=1,
+            max_team_size=4,
+        )

@@ -9,6 +9,43 @@ from app.models.metric_scoring_model import (
 )
 
 
+def test_manual_metrics_follow_the_requirement_fields():
+    service = MetricScoringService(firebase=MagicMock(), requirements=MagicMock())
+    standard = service.build_manual_metrics(
+        {
+            "fields": [
+                {"key": "problem_statement", "label": "Problem Statement"},
+                {"key": "solution_description", "label": "Solution Description"},
+                {"key": "project_github_link", "label": "GitHub Link"},
+                {"key": "project_deployed_link", "label": "Deployed Link"},
+            ]
+        }
+    )
+    parsed = [FieldScoringMetric(**item) for item in standard]
+    assert [item.field_key for item in parsed] == [
+        "problem_statement",
+        "solution_description",
+        "video_explanation",
+        "project_github_link",
+        "project_deployed_link",
+    ]
+    assert [item.weight for item in parsed] == [15, 15, 20, 20, 30]
+    github = parsed[3]
+    assert github.scoring_mode == "manual"
+    assert [segment.key for segment in github.segments or []] == [
+        "visibility",
+        "structure_score",
+    ]
+    assert "github_link" not in {item.field_key for item in parsed}
+
+    custom = service.build_manual_metrics({"fields": [{"key": "team_name", "label": "Team Name"}]})
+    custom_parsed = [FieldScoringMetric(**item) for item in custom]
+    assert [item.field_key for item in custom_parsed] == ["video_explanation", "team_name"]
+    assert sum(item.weight or 0 for item in custom_parsed) == 100
+    assert custom_parsed[1].scoring_mode == "ai"
+    assert custom_parsed[1].scoring_prompt
+
+
 def test_get_scoring_setup_returns_requirement_and_optional_scoring():
     firebase = MagicMock()
     requirements = MagicMock()
@@ -17,7 +54,12 @@ def test_get_scoring_setup_returns_requirement_and_optional_scoring():
         "name": "Idea2Impact Requirements",
         "description": "Round 1",
         "fields": [
-            {"key": "problem_statement", "label": "Problem Statement", "field_type": "textarea", "is_required": True},
+            {
+                "key": "problem_statement",
+                "label": "Problem Statement",
+                "field_type": "textarea",
+                "is_required": True,
+            },
         ],
         "created_by": "admin",
         "created_at": "2026-01-01T00:00:00",
@@ -96,9 +138,7 @@ def test_upsert_accepts_github_link_alias_when_requirement_uses_project_github_l
             ),
         ],
     )
-    result = service.upsert_scoring_for_requirement(
-        "req-1", request, created_by="admin-1"
-    )
+    result = service.upsert_scoring_for_requirement("req-1", request, created_by="admin-1")
     keys = [m["field_key"] for m in result["metrics"]]
     assert "project_github_link" in keys
     assert "github_link" not in keys
@@ -177,8 +217,6 @@ def test_upsert_creates_when_missing():
         ],
     }
 
-    result = service.upsert_scoring_for_requirement(
-        "req-1", request, created_by="admin-1"
-    )
+    result = service.upsert_scoring_for_requirement("req-1", request, created_by="admin-1")
     assert result["evaluation_requirement_id"] == "req-1"
     assert firebase.set_document.called

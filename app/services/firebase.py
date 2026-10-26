@@ -162,6 +162,15 @@ class FirebaseService:
                 "Firebase Auth is temporarily unavailable"
             ) from e
 
+    def update_display_name(self, user_id: str, display_name: str) -> bool:
+        """Keep the Firebase Auth display name in step with the Firestore profile."""
+        try:
+            self._auth.update_user(user_id, display_name=display_name)
+            return True
+        except Exception as exc:
+            logger.warning("Could not update display name for %s: %s", user_id, exc)
+            return False
+
     def update_user_password(self, user_id: str, new_password: str) -> bool:
         """
         Update a Firebase user's password.

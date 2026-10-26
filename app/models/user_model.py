@@ -11,11 +11,20 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 from app.models.string_utils import strip_optional, strip_required
 
 
-UserRole = Literal["admin", "evaluator", "student"]
+UserRole = Literal["super_admin", "admin", "evaluator", "student", "custom"]
 ApprovalStatus = Literal["pending", "approved"]
 
-USER_ROLES: tuple[UserRole, ...] = ("admin", "evaluator", "student")
+USER_ROLES: tuple[UserRole, ...] = ("super_admin", "admin", "evaluator", "student", "custom")
+# Roles a person can pick on the public register screen.
+REGISTRATION_ROLES: tuple[str, ...] = ("evaluator", "student")
 NXTWAVE_EMAIL_DOMAIN = "@nxtwave.co.in"
+
+
+class VerificationDue(BaseModel):
+    """Channels a signed-in student or evaluator must still verify."""
+
+    email: bool = False
+    mobile: bool = False
 
 
 class TeamMember(BaseModel):
@@ -164,6 +173,24 @@ class EvaluatorRegisterRequest(BaseModel):
         return self
 
 
+class ProfileUpdateRequest(BaseModel):
+    """Signed-in user editing their own profile. Email and mobile stay unchanged."""
+
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    employee_id: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("first_name", "last_name", mode="before")
+    @classmethod
+    def normalize_name_parts(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("employee_id", mode="before")
+    @classmethod
+    def normalize_employee_id(cls, value: str | None) -> str | None:
+        return strip_optional(value)
+
+
 class UserUpdate(BaseModel):
     """Schema for user updates"""
 
@@ -189,19 +216,61 @@ class UserResponse(BaseModel):
     email: str
     role: UserRole
     niat_id: Optional[str] = None
+    college_id: Optional[str] = None
+    college_type: Optional[Literal["NIAT", "Non NIAT"]] = None
     employee_id: Optional[str] = None
     mobile_no: Optional[str] = None
     team_name: Optional[str] = None
     university: Optional[str] = None
     university_id: Optional[str] = None
     university_location: Optional[str] = None
+    batch_id: Optional[str] = None
+    batch_name: Optional[str] = None
     team_leader_name: Optional[str] = None
     team_members: Optional[list[TeamMember]] = None
     approval_status: Optional[ApprovalStatus] = None
+    custom_role_id: Optional[str] = None
+    custom_role_name: Optional[str] = None
+    permissions: list[str] = Field(
+        default_factory=list,
+        description="Application areas this user may open. Empty for students and evaluators.",
+    )
+    profile_completed: bool = Field(
+        True,
+        description=(
+            "False until a Super Admin-created admin or custom user verifies email "
+            "and mobile and saves an employee ID."
+        ),
+    )
     email_verified: Optional[bool] = None
     phone_verified: Optional[bool] = None
+    verification_due: VerificationDue = Field(
+        default_factory=VerificationDue,
+        description=(
+            "True for a channel only after Super Admin has released verification "
+            "for this account and that channel is still unverified."
+        ),
+    )
     created_at: OptionalISTDateTime = None
     updated_at: OptionalISTDateTime = None
+
+
+class OverviewPendingEvaluator(BaseModel):
+    """One pending evaluator shown on the Overview panel."""
+
+    id: str
+    name: str = ""
+    email: str = ""
+
+
+class AdminOverviewResponse(BaseModel):
+    """Counts for Overview. The hackathon list stays on GET /hackathons."""
+
+    total_users: int = 0
+    student_count: int = 0
+    evaluator_count: int = 0
+    pending_count: int = 0
+    pending_evaluators: list[OverviewPendingEvaluator] = Field(default_factory=list)
 
 
 class PaginatedUsersResponse(BaseModel):
@@ -274,6 +343,11 @@ class LoginResponse(BaseModel):
     name: str
     role: UserRole
     approval_status: Optional[ApprovalStatus] = None
+    custom_role_id: Optional[str] = None
+    custom_role_name: Optional[str] = None
+    permissions: list[str] = Field(default_factory=list)
+    profile_completed: bool = True
+    verification_due: VerificationDue = Field(default_factory=VerificationDue)
     message: str = "Login successful"
     csrf_token: str
 
@@ -291,4 +365,9 @@ class CurrentUser(BaseModel):
     email: str
     role: UserRole
     name: str
+    university_id: Optional[str] = None
+    batch_id: Optional[str] = None
     approval_status: Optional[ApprovalStatus] = None
+    custom_role_id: Optional[str] = None
+    permissions: list[str] = Field(default_factory=list)
+    profile_completed: bool = True

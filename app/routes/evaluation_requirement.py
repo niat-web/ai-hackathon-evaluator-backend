@@ -23,6 +23,7 @@ from app.models.evaluation_requirement_model import (
     EvaluationRequirementUpdateRequest,
 )
 from app.models.metric_scoring_model import (
+    FieldScoringMetric,
     MetricScoringResponse,
     MetricScoringUpsertByRequirementRequest,
     ScoringPromptPlaceholder,
@@ -100,6 +101,7 @@ async def get_scoring_setup_for_requirement(
         scoring_prompt_placeholders=[
             ScoringPromptPlaceholder(**item) for item in SCORING_PROMPT_PLACEHOLDERS
         ],
+        manual_metrics=[FieldScoringMetric(**item) for item in setup.get("manual_metrics") or []],
     )
 
 
@@ -111,9 +113,7 @@ async def get_metric_scoring_for_requirement(
     requirement_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     scoring_service: MetricScoringService = Depends(get_metric_scoring_service),
-    requirement_service: EvaluationRequirementService = Depends(
-        get_evaluation_requirement_service
-    ),
+    requirement_service: EvaluationRequirementService = Depends(get_evaluation_requirement_service),
 ) -> MetricScoringResponse:
     """Get the scorecard linked to this requirement (404 if none configured yet)."""
     requirement = await run_sync(requirement_service.get_requirement, requirement_id)
@@ -122,9 +122,7 @@ async def get_metric_scoring_for_requirement(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evaluation requirement not found",
         )
-    scoring = await run_sync(
-        scoring_service.get_scoring_for_requirement, requirement_id
-    )
+    scoring = await run_sync(scoring_service.get_scoring_for_requirement, requirement_id)
     if not scoring:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -177,9 +175,7 @@ async def delete_metric_scoring_for_requirement(
     scoring_service: MetricScoringService = Depends(get_metric_scoring_service),
 ) -> dict:
     """Delete the scorecard linked to this requirement (Set scoring → Delete)."""
-    scoring = await run_sync(
-        scoring_service.get_scoring_for_requirement, requirement_id
-    )
+    scoring = await run_sync(scoring_service.get_scoring_for_requirement, requirement_id)
     if not scoring:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -2,6 +2,7 @@
 Hackathon routes.
 
     POST   /hackathons            -> admin creates a hackathon (multipart, banner optional)
+    POST   /hackathons/{id}/duplicate -> admin copies one into an editable draft
     GET    /hackathons            -> list hackathons (any authenticated user)
     GET    /hackathons/catalog    -> homepage cards (public; published rounds only)
     GET    /hackathons/{id}       -> get a single hackathon
@@ -9,7 +10,9 @@ Hackathon routes.
     DELETE /hackathons/{id}       -> admin deletes a hackathon
     POST   /hackathons/{id}/rounds/{index}/publish -> admin publishes a round
     GET    /hackathons/{id}/rounds/{index}/leaderboard -> ranked results
-    POST   /hackathons/{id}/rounds/{index}/leaderboard/publish -> admin publishes ranks
+    POST   /hackathons/{id}/rounds/{index}/leaderboard/publish -> admin publishes ranks (no email)
+    GET    /hackathons/{id}/rounds/{index}/winners -> super admin: preview top N
+    POST   /hackathons/{id}/rounds/{index}/winners/announce -> super admin: email those places
     GET    /hackathons/{id}/video-analysis-prompts -> admin: Video Analysis prompts for Settings
     PUT    /hackathons/{id}/video-analysis-prompts -> admin: save hackathon-specific prompts
     DELETE /hackathons/{id}/video-analysis-prompts -> admin: reset both to global Video Analysis
@@ -20,6 +23,10 @@ Hackathon routes.
     PUT    /hackathons/{id}/submission-limit -> admin: set max submissions (1–3)
     GET    /hackathons/{id}/evaluators -> admin: roster for settings and the dropdown
     PUT    /hackathons/{id}/evaluators -> admin: replace which evaluators can be assigned
+    GET    /hackathons/{id}/visibility -> admin: universities and batches for Settings
+    PUT    /hackathons/{id}/visibility -> admin: who can see this hackathon
+    GET    /hackathons/{id}/evaluation-approvals -> super admin: pending review counts
+    POST   /hackathons/{id}/evaluation-approvals/approve-all -> super admin: approve them
 """
 
 import json
@@ -38,7 +45,12 @@ from fastapi import (
 )
 from pydantic import ValidationError
 
-from app.middleware.auth_middleware import get_admin_user, get_current_user
+from app.middleware.auth_middleware import (
+    get_admin_user,
+    get_current_user,
+    get_optional_current_user,
+    get_super_admin_user,
+)
 from app.exceptions import AppError
 from app.models.hackathon_model import (
     HackathonCatalogItem,
@@ -52,13 +64,19 @@ from app.models.hackathon_model import (
     ReportPublishingUpdateRequest,
     SubmissionLimitResponse,
     SubmissionLimitUpdateRequest,
+    HackathonVisibilityResponse,
+    HackathonVisibilityUpdateRequest,
+    BulkApproveEvaluationsResponse,
+    EvaluationApprovalSummary,
     TimelineRound,
 )
 from app.models.round_model import PublishRoundResponse
 from app.models.leaderboard_model import (
+    AnnounceWinnersRequest,
     LeaderboardResponse,
     PublishLeaderboardRequest,
     PublishLeaderboardResponse,
+    WinnerAnnouncementResponse,
 )
 from app.models.evaluation_prompt_model import (
     HackathonVideoAnalysisPromptsResponse,
@@ -84,6 +102,7 @@ from app.models.hackathon_draft_model import (
     HackathonDraftUpdateRequest,
 )
 from app.utils.async_io import run_sync
+from app.utils.hackathon_visibility import visible_to_viewer
 
 
 logger = logging.getLogger(__name__)
@@ -290,12 +309,42 @@ async def delete_hackathon_draft(
     return {"message": "Draft deleted successfully"}
 
 
+@router.post(
+    "/{hackathon_id}/duplicate",
+    response_model=HackathonDraftResponse,
+    status_code=201,
+)
+async def duplicate_hackathon(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> HackathonDraftResponse:
+    """
+    Copy an existing hackathon into a creation draft.
+
+    The admin edits the copy in the wizard and publishes it. Rounds stay
+    unpublished. Submissions and scores are not copied.
+    """
+    draft = await run_sync(draft_service.duplicate_hackathon, hackathon_id, admin.user_id)
+    return HackathonDraftResponse(**draft)
+
+
 @router.post("", response_model=HackathonResponse, status_code=201)
 async def create_hackathon(
     name: str = Form(..., min_length=1, max_length=200),
     description: str = Form(..., min_length=1, max_length=10000),
     start_date: str = Form(..., description="ISO date YYYY-MM-DD"),
     end_date: str = Form(..., description="ISO date YYYY-MM-DD"),
+    start_time: str
+    | None = Form(
+        None,
+        description="IST start clock HH:MM. Omit for 00:00. Submissions open at this minute.",
+    ),
+    end_time: str
+    | None = Form(
+        None,
+        description="IST end clock HH:MM. Omit for 23:59. That minute is still open.",
+    ),
     guidelines: str = Form(
         ...,
         min_length=1,
@@ -321,7 +370,8 @@ async def create_hackathon(
         None,
         description=(
             'JSON array of rounds, e.g. [{"title":"Round 1","start_date":"YYYY-MM-DD",'
-            '"end_date":"YYYY-MM-DD","evaluation_requirement_id":"…","max_team_size":2,'
+            '"start_time":"09:00","end_date":"YYYY-MM-DD","end_time":"18:00",'
+            '"evaluation_requirement_id":"…","max_team_size":2,'
             '"working_demo_video_required":true,"auto_ai_evaluation":false}]'
         ),
     ),
@@ -352,6 +402,8 @@ async def create_hackathon(
             description=description,
             start_date=start_date,
             end_date=end_date,
+            start_time=start_time,
+            end_time=end_time,
             guidelines=guidelines,
             evaluator_guidelines=evaluator_guidelines,
             theme_ids=theme_ids_data,
@@ -394,8 +446,10 @@ async def list_hackathons(
     current_user: CurrentUser = Depends(get_current_user),
     service: HackathonService = Depends(get_hackathon_service),
 ) -> list[HackathonResponse]:
-    """List all hackathons. Available to any authenticated user."""
+    """List hackathons. Students only receive ones open to their university and batch."""
     hackathons = await run_sync(service.list_hackathons)
+    if current_user.role == "student":
+        hackathons = [item for item in hackathons if visible_to_viewer(item, current_user)]
     return [await _to_response(service, item, current_user=current_user) for item in hackathons]
 
 
@@ -406,15 +460,20 @@ async def list_hackathon_catalog(
         description="When false, omit hackathons whose featured round has ended.",
     ),
     service: HackathonService = Depends(get_hackathon_service),
+    viewer: CurrentUser | None = Depends(get_optional_current_user),
 ) -> list[HackathonCatalogItem]:
     """
     Homepage listing. Reads live Firestore hackathons and attaches computed
     badges: Open, Closing soon, Upcoming, Closed, Solo, Team.
 
-    Public (no login). Only hackathons with at least one **published** round
-    are returned. Poll this endpoint for near-real-time home cards.
+    Public when nobody is signed in: only hackathons opened to every university
+    and batch. A signed-in student also sees hackathons for their campus.
     """
-    items = await run_sync(service.list_hackathon_catalog, include_closed=include_closed)
+    items = await run_sync(
+        service.list_hackathon_catalog,
+        include_closed=include_closed,
+        viewer=viewer,
+    )
     return [HackathonCatalogItem(**item) for item in items]
 
 
@@ -604,6 +663,88 @@ async def update_submission_limit(
 
 
 @router.get(
+    "/{hackathon_id}/visibility",
+    response_model=HackathonVisibilityResponse,
+)
+async def get_hackathon_visibility(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> HackathonVisibilityResponse:
+    """Universities, batches, and which of them can see this hackathon."""
+    _ = admin
+    try:
+        payload = await run_sync(service.get_visibility, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVisibilityResponse(**payload)
+
+
+@router.put(
+    "/{hackathon_id}/visibility",
+    response_model=HackathonVisibilityResponse,
+)
+async def update_hackathon_visibility(
+    hackathon_id: str,
+    request: HackathonVisibilityUpdateRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> HackathonVisibilityResponse:
+    """Choose the universities and batches whose students see this hackathon."""
+    _ = admin
+    try:
+        payload = await run_sync(service.set_visibility, hackathon_id, request)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVisibilityResponse(**payload)
+
+
+@router.get(
+    "/{hackathon_id}/evaluation-approvals",
+    response_model=EvaluationApprovalSummary,
+)
+async def get_evaluation_approvals(
+    hackathon_id: str,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> EvaluationApprovalSummary:
+    """How many evaluator-submitted reviews are waiting for Super Admin."""
+    _ = super_admin
+    try:
+        payload = await run_sync(service.evaluation_approval_summary, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return EvaluationApprovalSummary(**payload)
+
+
+@router.post(
+    "/{hackathon_id}/evaluation-approvals/approve-all",
+    response_model=BulkApproveEvaluationsResponse,
+)
+async def bulk_approve_evaluations(
+    hackathon_id: str,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> BulkApproveEvaluationsResponse:
+    """
+    Approve every evaluation an evaluator has submitted for this hackathon.
+
+    Each approval uses the score already on the submission. Those scores are
+    then eligible for the leaderboard. Students still see the board only after
+    that round's leaderboard is published.
+    """
+    try:
+        payload = await run_sync(
+            service.bulk_approve_evaluations,
+            hackathon_id,
+            super_admin.user_id,
+        )
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return BulkApproveEvaluationsResponse(**payload)
+
+
+@router.get(
     "/{hackathon_id}/evaluators",
     response_model=HackathonEvaluatorsResponse,
 )
@@ -659,6 +800,12 @@ async def list_hackathon_themes(
 
     Students use this list on the submission form to pick a theme.
     """
+    hackathon = await run_sync(service.get_hackathon, hackathon_id)
+    if not hackathon or not visible_to_viewer(hackathon, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Hackathon not found",
+        )
     themes = await run_sync(service.get_hackathon_themes, hackathon_id)
     if themes is None:
         raise HTTPException(
@@ -676,7 +823,7 @@ async def get_hackathon(
 ) -> HackathonResponse:
     """Get a single hackathon by id (includes resolved ``themes``)."""
     hackathon = await run_sync(service.get_hackathon, hackathon_id)
-    if not hackathon:
+    if not hackathon or not visible_to_viewer(hackathon, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Hackathon not found",
@@ -698,9 +845,9 @@ async def publish_hackathon_round(
     """
     Publish a timeline round for students (admin only).
 
-    Validates IST calendar dates: cannot publish after the round ``end_date``.
-    Students only see published rounds; submission opens when IST today is within
-    ``start_date``–``end_date`` (inclusive).
+    Validates the IST window: cannot publish after the round end minute.
+    Students only see published rounds. Submissions open at ``start_time``
+    and stay open through ``end_time`` (missing times are 00:00 and 23:59).
     """
     try:
         result = await run_sync(
@@ -728,13 +875,20 @@ async def get_round_leaderboard(
     round_index: int,
     current_user: CurrentUser = Depends(get_current_user),
     service: LeaderboardService = Depends(get_leaderboard_service),
+    hackathon_service: HackathonService = Depends(get_hackathon_service),
 ) -> LeaderboardResponse:
     """
     Ranked results for one round (highest ``final_score`` first).
 
     Admin and evaluators always get a preview. Students only after the admin
-    publishes the leaderboard.
+    publishes the leaderboard, and only when the hackathon is open to them.
     """
+    hackathon = await run_sync(hackathon_service.get_hackathon, hackathon_id)
+    if not hackathon or not visible_to_viewer(hackathon, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Hackathon not found",
+        )
     result = await run_sync(
         service.get_leaderboard,
         hackathon_id,
@@ -759,7 +913,7 @@ async def publish_round_leaderboard(
     Publish (or unpublish) the round leaderboard.
 
     Ranking includes only submissions with ``review_status=approved``.
-    On first publish, ranked candidates are emailed unless ``notify`` is false.
+    Students see the board on the hackathon page. This does not send email.
     """
     payload = request or PublishLeaderboardRequest()
     result = await run_sync(
@@ -774,6 +928,50 @@ async def publish_round_leaderboard(
     return PublishLeaderboardResponse(**result)
 
 
+@router.get(
+    "/{hackathon_id}/rounds/{round_index}/winners",
+    response_model=WinnerAnnouncementResponse,
+)
+async def preview_round_winners(
+    hackathon_id: str,
+    round_index: int,
+    top_n: int = Query(5, ge=1, le=100),
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: LeaderboardService = Depends(get_leaderboard_service),
+) -> WinnerAnnouncementResponse:
+    """Who would receive a winner email for this top N. Does not send mail."""
+    _ = super_admin
+    result = await run_sync(service.preview_winners, hackathon_id, round_index, top_n)
+    return WinnerAnnouncementResponse(**result)
+
+
+@router.post(
+    "/{hackathon_id}/rounds/{round_index}/winners/announce",
+    response_model=WinnerAnnouncementResponse,
+)
+async def announce_round_winners(
+    hackathon_id: str,
+    round_index: int,
+    request: AnnounceWinnersRequest,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: LeaderboardService = Depends(get_leaderboard_service),
+) -> WinnerAnnouncementResponse:
+    """
+    Email the top places for this round.
+
+    Rank 1 is Winner (1st prize), rank 2 is 1st runner-up (2nd prize),
+    rank 3 is 2nd runner-up, and later places are 4th, 5th, and so on.
+    """
+    result = await run_sync(
+        service.announce_winners,
+        hackathon_id,
+        round_index,
+        request.top_n,
+        super_admin.user_id,
+    )
+    return WinnerAnnouncementResponse(**result)
+
+
 @router.patch("/{hackathon_id}", response_model=HackathonResponse)
 async def update_hackathon(
     hackathon_id: str,
@@ -781,6 +979,8 @@ async def update_hackathon(
     description: str | None = Form(None, max_length=10000),
     start_date: str | None = Form(None),
     end_date: str | None = Form(None),
+    start_time: str | None = Form(None, description="IST HH:MM. Omit to leave unchanged."),
+    end_time: str | None = Form(None, description="IST HH:MM. Omit to leave unchanged."),
     guidelines: str
     | None = Form(
         None,
@@ -816,6 +1016,8 @@ async def update_hackathon(
         "description": description,
         "start_date": start_date,
         "end_date": end_date,
+        "start_time": start_time,
+        "end_time": end_time,
         "guidelines": guidelines,
         "evaluator_guidelines": evaluator_guidelines,
         "theme_ids": theme_ids_data,

@@ -39,6 +39,12 @@ class FakeFirebase:
 class FakeHackathonService:
     def __init__(self) -> None:
         self.created: list[dict] = []
+        self.by_id: dict[str, dict] = {}
+        self.collection = "hackathons"
+
+    def get_hackathon(self, hackathon_id: str):
+        item = self.by_id.get(hackathon_id)
+        return dict(item) if item else None
 
     def create_hackathon(self, request, created_by, banner=None):
         payload = {
@@ -142,6 +148,83 @@ def test_publish_creates_hackathon_and_deletes_draft():
     assert published["id"] == "hack-published"
     assert svc.get_draft(draft_id) is None
     assert len(svc.hackathon_service.created) == 1
+
+
+def test_duplicate_opens_an_editable_draft_without_live_rounds():
+    firebase = FakeFirebase()
+    hackathons = FakeHackathonService()
+    hackathons.by_id["src-1"] = {
+        "id": "src-1",
+        "name": "Hacktoberfest",
+        "description": "Build",
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-12",
+        "guidelines": "Students",
+        "evaluator_guidelines": "Evaluators",
+        "hackathon_url": "https://example.com",
+        "theme_ids": ["theme-1"],
+        "timeline": [
+            {
+                "title": "Round 1",
+                "team_size_mode": "multi",
+                "min_team_size": 2,
+                "max_team_size": 4,
+                "published": True,
+                "published_at": "2026-10-01T00:00:00+05:30",
+                "leaderboard_published": True,
+                "round_status": "open",
+                "evaluation_requirement_id": "req-1",
+            }
+        ],
+        "prizes": {
+            "winner": "10k",
+            "first_runner_up": "5k",
+            "second_runner_up": "2k",
+        },
+        "visibility": {
+            "all_universities": False,
+            "all_batches": True,
+            "university_ids": ["uni-a"],
+            "batch_ids": [],
+        },
+        "max_submissions": 2,
+        "auto_publish_reports": True,
+        "evaluator_ids": ["ev-1"],
+        "video_analysis_prompts": {"analyze_video": "custom"},
+    }
+    svc = HackathonDraftService(firebase=firebase, hackathon_service=hackathons)
+
+    draft = svc.duplicate_hackathon("src-1", "admin-1")
+
+    assert draft["name"] == "Hacktoberfest (copy)"
+    assert draft["source_hackathon_id"] == "src-1"
+    assert draft["source_hackathon_name"] == "Hacktoberfest"
+    assert draft["current_step"] == "review"
+    assert draft["description"] == "Build"
+    assert draft["theme_ids"] == ["theme-1"]
+    copied_round = draft["timeline"][0]
+    assert copied_round["published"] is False
+    assert copied_round["leaderboard_published"] is False
+    assert copied_round["evaluation_requirement_id"] == "req-1"
+    assert "round_status" not in copied_round
+    stored = firebase.get_document("hackathon_drafts", draft["id"])
+    assert stored["copied_settings"]["max_submissions"] == 2
+    assert stored["copied_settings"]["evaluator_ids"] == ["ev-1"]
+    assert stored["copied_settings"]["visibility"]["university_ids"] == ["uni-a"]
+
+    published = svc.publish_draft(draft["id"], "admin-1")
+    assert published["max_submissions"] == 2
+    assert published["auto_publish_reports"] is True
+    assert published["evaluator_ids"] == ["ev-1"]
+    assert published["video_analysis_prompts"]["analyze_video"] == "custom"
+    assert svc.get_draft(draft["id"]) is None
+
+
+def test_duplicate_missing_hackathon():
+    svc = _service()
+    with pytest.raises(NotFoundError) as exc:
+        svc.duplicate_hackathon("missing", "admin-1")
+    assert exc.value.code == "HACKATHON_NOT_FOUND"
 
 
 def test_delete_missing_draft_returns_false():

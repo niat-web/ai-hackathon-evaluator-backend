@@ -14,11 +14,11 @@ from __future__ import annotations
 import logging
 import os
 import smtplib
-import uuid
 from email.message import EmailMessage
 from typing import Protocol
 
 from app.services.firebase import FirebaseService
+from app.utils.ids import new_uuid
 
 
 logger = logging.getLogger(__name__)
@@ -37,11 +37,11 @@ BREVO_SMTP_PORT = 587
 
 
 class EmailService(Protocol):
-    def send_verification_code(self, to_email: str, code: str) -> None: ...
+    def send_verification_code(self, to_email: str, code: str) -> None:
+        ...
 
-    def send_notification_email(
-        self, to_email: str, subject: str, body: str
-    ) -> None: ...
+    def send_notification_email(self, to_email: str, subject: str, body: str) -> None:
+        ...
 
 
 def resolve_smtp_config() -> dict[str, str | int | bool]:
@@ -50,9 +50,7 @@ def resolve_smtp_config() -> dict[str, str | int | bool]:
     port = int(os.getenv("SMTP_PORT", str(BREVO_SMTP_PORT)))
     username = os.getenv("SMTP_USERNAME", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
-    from_addr = (
-        os.getenv("SMTP_FROM") or os.getenv("MAIL_FROM") or username
-    ).strip()
+    from_addr = (os.getenv("SMTP_FROM") or os.getenv("MAIL_FROM") or username).strip()
     from_name = os.getenv("SMTP_FROM_NAME", "Challazo").strip()
     use_ssl = os.getenv("SMTP_USE_SSL", "").strip().lower() in ("1", "true", "yes")
     return {
@@ -115,7 +113,7 @@ class FirestoreTriggerEmailService:
         body = OTP_BODY_TEMPLATE.format(code=code)
         self.firebase.set_document(
             MAIL_COLLECTION,
-            str(uuid.uuid4()),
+            new_uuid(),
             {
                 "to": [to_email],
                 "message": {
@@ -129,7 +127,7 @@ class FirestoreTriggerEmailService:
     def send_notification_email(self, to_email: str, subject: str, body: str) -> None:
         self.firebase.set_document(
             MAIL_COLLECTION,
-            str(uuid.uuid4()),
+            new_uuid(),
             {
                 "to": [to_email],
                 "message": {

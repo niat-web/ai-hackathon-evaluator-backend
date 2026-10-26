@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 from google.cloud import storage
 
+from app.services.access_service import AccessService
 from app.services.app_settings_service import AppSettingsService
 from app.services.evaluation_job_service import EvaluationJobService
 from app.services.evaluation_prompt_service import EvaluationPromptService
@@ -68,6 +69,7 @@ class AppContainer:
     evaluation_job_service: EvaluationJobService
     app_settings_service: AppSettingsService
     verification_service: VerificationService
+    access_service: AccessService
 
 
 def build_app_container() -> AppContainer:
@@ -136,6 +138,7 @@ def build_app_container() -> AppContainer:
         user_service=user_service,
         university_service=university_service,
     )
+    access_service = AccessService(firebase=firebase)
 
     logger.info("App service container initialized (shared Firebase + GCS clients)")
     return AppContainer(
@@ -156,6 +159,7 @@ def build_app_container() -> AppContainer:
         evaluation_job_service=evaluation_job_service,
         app_settings_service=app_settings_service,
         verification_service=verification_service,
+        access_service=access_service,
     )
 
 
@@ -193,6 +197,10 @@ def get_theme_service(request: Request) -> ThemeService:
 
 def get_university_service(request: Request) -> UniversityService:
     return get_container(request).university_service
+
+
+def get_access_service(request: Request) -> AccessService:
+    return get_container(request).access_service
 
 
 def get_evaluation_requirement_service(

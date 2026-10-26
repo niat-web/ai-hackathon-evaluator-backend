@@ -3,15 +3,15 @@ Evaluation requirement service — reusable submission-field definitions.
 """
 
 import logging
-import uuid
 from typing import Any
-from app.utils.time import now_ist_iso
 
 from app.models.evaluation_requirement_model import (
     EvaluationRequirementCreateRequest,
     EvaluationRequirementUpdateRequest,
 )
 from app.services.firebase import FirebaseService
+from app.utils.ids import new_id
+from app.utils.time import now_ist_iso
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class EvaluationRequirementService:
         created_by: str,
     ) -> dict[str, Any]:
         """Create a reusable evaluation requirement."""
-        requirement_id = uuid.uuid4().hex
+        requirement_id = new_id()
         now = now_ist_iso()
 
         document = {

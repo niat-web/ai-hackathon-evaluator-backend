@@ -151,6 +151,53 @@ def test_leader_creates_team_and_member_joins_for_round():
     assert also.team.is_full is False
 
 
+def test_exact_team_size_allows_only_that_count():
+    svc = _service(
+        timeline=[
+            _open_round(
+                title="Round 1",
+                team_size_mode="multi",
+                min_team_size=3,
+                max_team_size=3,
+            )
+        ]
+    )
+    created = svc.create_team("hack-1", 0, _student("leader-1"), "Exact Three")
+    assert created.team.max_members == 3
+    assert created.team.is_full is False
+    with pytest.raises(ForbiddenError) as too_small:
+        svc.assert_submission_allowed("hack-1", 0, "leader-1")
+    assert too_small.value.code == "TEAM_INCOMPLETE"
+
+    svc.join_team("hack-1", 0, _student("member-1"), created.join_code.code)
+    full = svc.join_team("hack-1", 0, _student("member-2"), created.join_code.code)
+    assert full.team.member_count == 3
+    assert full.team.is_full is True
+    svc.assert_submission_allowed("hack-1", 0, "leader-1")
+    with pytest.raises(ConflictError) as exc:
+        svc.join_team("hack-1", 0, _student("solo-1"), created.join_code.code)
+    assert exc.value.code == "TEAM_FULL"
+    with pytest.raises(BadRequestError) as solo:
+        svc.enroll_solo("hack-1", 0, _student("solo-1"))
+    assert solo.value.code == "TEAM_REQUIRED"
+
+
+def test_open_team_size_has_no_roster_limit():
+    svc = _service(timeline=[_open_round(title="Round 1", team_size_mode="open")])
+    alone = svc.enroll_solo("hack-1", 0, _student("solo-1"))
+    assert alone.role == "solo"
+    assert alone.can_submit is True
+    assert alone.max_team_size is None
+
+    created = svc.create_team("hack-1", 0, _student("leader-1"), "Anyone")
+    assert created.team.max_members is None
+    assert created.team.is_full is False
+    svc.assert_submission_allowed("hack-1", 0, "leader-1")
+    joined = svc.join_team("hack-1", 0, _student("member-1"), created.join_code.code)
+    svc.join_team("hack-1", 0, _student("member-2"), created.join_code.code)
+    assert joined.team.is_full is False
+
+
 def test_join_code_scoped_to_round():
     svc = _service(
         timeline=[

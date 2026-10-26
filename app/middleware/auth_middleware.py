@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.user_model import CurrentUser
 from app.services.firebase import FirebaseService
+from app.services.access_service import AccessService, permissions_for_request
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
 from app.utils.async_io import run_sync
@@ -152,13 +153,46 @@ def _authenticate_token(
         )
 
     approval_status = RegistrationService.resolve_approval_status(user_data)
+    access = AccessService(firebase=user_service.firebase)
+    role = user_data.get("role", "student")
 
     return CurrentUser(
         user_id=user_id,
         email=user_data.get("email", ""),
-        role=user_data.get("role", "student"),
+        role=role,
         name=user_data.get("name", ""),
+        university_id=user_data.get("university_id"),
+        batch_id=user_data.get("batch_id"),
         approval_status=approval_status,
+        custom_role_id=user_data.get("custom_role_id"),
+        permissions=access.permissions_for(user_data),
+        profile_completed=user_data.get("profile_completed", True) is not False,
+    )
+
+
+_PROFILE_SETUP_PATHS = (
+    "/auth/me",
+    "/auth/csrf",
+    "/auth/profile/start",
+    "/auth/profile/complete",
+)
+
+
+def _enforce_profile_ready(current_user: CurrentUser, path: str) -> None:
+    """Block app screens until a new staff user finishes email, mobile, and employee ID."""
+    if current_user.profile_completed:
+        return
+    clean = (path or "").split("?", 1)[0]
+    if clean in _PROFILE_SETUP_PATHS:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": "PROFILE_INCOMPLETE",
+            "message": (
+                "Verify your email and mobile number and add your employee ID " "before continuing."
+            ),
+        },
     )
 
 
@@ -186,7 +220,15 @@ async def get_current_user(
             )
 
         _enforce_csrf_if_needed(request, used_cookie)
-        return await run_sync(_authenticate_token, token, firebase, user_service)
+        current_user = await run_sync(_authenticate_token, token, firebase, user_service)
+        request.state.activity_actor = {
+            "user_id": current_user.user_id,
+            "name": current_user.name,
+            "email": current_user.email,
+            "role": current_user.role,
+        }
+        _enforce_profile_ready(current_user, request.url.path)
+        return current_user
 
     except HTTPException:
         raise
@@ -207,15 +249,54 @@ async def get_current_user(
         ) from e
 
 
+async def get_optional_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    firebase: FirebaseService = Depends(get_firebase),
+    user_service: UserService = Depends(get_user_service),
+) -> CurrentUser | None:
+    """Signed-in user when a token is present. Anonymous callers stay anonymous."""
+    token, _used_cookie = _extract_token(request, credentials)
+    if not token:
+        return None
+    try:
+        return await run_sync(_authenticate_token, token, firebase, user_service)
+    except (HTTPException, AppError, ValueError):
+        return None
+
+
 def get_admin_user(
+    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> CurrentUser:
-    """Dependency for admin-only routes."""
-    if current_user.role != "admin":
-        logger.warning("Unauthorized admin access attempt: %s", current_user.user_id)
+    """
+    Admin screens.
+
+    Built-in admin and super admin may call every admin route. A custom role
+    may call a route only when that route's area is in its permissions.
+    """
+    if current_user.role in ("admin", "super_admin"):
+        return current_user
+    if current_user.role == "custom":
+        allowed = permissions_for_request(request.url.path, request.method)
+        held = set(current_user.permissions or [])
+        if allowed and allowed & held:
+            return current_user
+    logger.warning("Unauthorized admin access attempt: %s", current_user.user_id)
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin access required",
+    )
+
+
+def get_super_admin_user(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Roles, permissions, and creating staff logins."""
+    if current_user.role != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
+            detail="Super admin access required",
         )
     return current_user
 

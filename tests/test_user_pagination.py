@@ -16,6 +16,7 @@ def _user(
     role: str = "student",
     created_at: str,
     niat_id: str | None = None,
+    mobile_no: str | None = None,
 ) -> dict:
     return {
         "id": user_id,
@@ -24,6 +25,7 @@ def _user(
         "role": role,
         "created_at": created_at,
         "niat_id": niat_id,
+        "mobile_no": mobile_no,
         "approval_status": "approved",
     }
 
@@ -33,6 +35,55 @@ def _service(students: list[dict], everyone: list[dict] | None = None) -> UserSe
     firebase.query_collection.return_value = students
     firebase.get_collection.return_value = everyone if everyone is not None else students
     return UserService(firebase=firebase)
+
+
+def test_overview_counts_students_and_the_newest_pending_evaluators():
+    service = _service(
+        [],
+        everyone=[
+            _user(
+                "admin",
+                name="Ada Admin",
+                email="ada@example.com",
+                role="admin",
+                created_at="2026-01-01",
+            ),
+            _user("s1", name="Student", email="s@example.com", created_at="2026-08-01"),
+            _user(
+                "old",
+                name="Old Pending",
+                email="old@example.com",
+                role="evaluator",
+                created_at="2026-07-01",
+            ),
+            _user(
+                "new",
+                name="New Pending",
+                email="new@example.com",
+                role="evaluator",
+                created_at="2026-09-01",
+            ),
+            _user(
+                "ok",
+                name="Approved",
+                email="ok@example.com",
+                role="evaluator",
+                created_at="2026-08-01",
+            ),
+        ],
+    )
+    service.firebase.get_collection.return_value[-2]["approval_status"] = "pending"
+    service.firebase.get_collection.return_value[-3]["approval_status"] = "pending"
+
+    overview = service.overview(pending_limit=1)
+
+    assert overview["student_count"] == 1
+    assert overview["evaluator_count"] == 3
+    assert overview["total_users"] == 4
+    assert overview["pending_count"] == 2
+    assert overview["pending_evaluators"] == [
+        {"id": "new", "name": "New Pending", "email": "new@example.com"}
+    ]
 
 
 def test_student_page_is_fifteen_newest_first_and_skips_other_roles():
@@ -82,6 +133,33 @@ def test_search_matches_name_email_and_niat_id():
     assert [item["id"] for item in by_name["items"]] == ["a"]
     assert [item["id"] for item in by_id["items"]] == ["b"]
     assert by_id["total"] == 1
+
+
+def test_search_matches_mobile_with_or_without_country_code():
+    students = [
+        _user(
+            "a",
+            name="Ada",
+            email="ada@example.com",
+            created_at="2026-09-01",
+            mobile_no="+919640198259",
+        ),
+        _user(
+            "b",
+            name="Grace",
+            email="grace@example.com",
+            created_at="2026-08-01",
+            mobile_no="+918888877777",
+        ),
+    ]
+    service = _service(students)
+
+    for query in ("919640198259", "9640198259", "96401-98259", "98259"):
+        page = service.paginate_users(page=1, page_size=15, role="student", q=query)
+        assert [item["id"] for item in page["items"]] == ["a"]
+
+    other = service.paginate_users(page=1, page_size=15, role="student", q="88888")
+    assert [item["id"] for item in other["items"]] == ["b"]
 
 
 def test_page_past_the_end_is_empty():
